@@ -20,7 +20,7 @@ classifiers = [
 # x402 is pinned to the 2.x line: client.py imports `x402.x402Client`,
 # `x402.mechanisms.svm` and `x402.http.clients`, which are the 2.x module
 # layout and do not exist on 0.x/1.x — the old `>=0.1` floor admitted versions
-# that can never satisfy those imports. Verified against x402 2.19.0.
+# that can never satisfy those imports. Verified against x402 2.22.0 (2026-09-10).
 dependencies = [
     "httpx>=0.27,<1",
     "x402[svm,httpx]>=2.0,<3",
@@ -30,6 +30,7 @@ dependencies = [
 stream = ["websockets>=12"]
 langchain = ["langchain-core>=0.3"]
 crewai = ["crewai>=0.80"]
+dev = ["pytest>=7.0"]
 
 [project.urls]
 Homepage = "https://madeonsol.com/solana-api"
