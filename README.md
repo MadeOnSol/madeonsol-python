@@ -10,7 +10,9 @@
 
 Python SDK for the [MadeOnSol](https://madeonsol.com) Solana KOL intelligence API.
 
-> Real-time Solana trading intelligence: track 1,069 KOL wallets with <3s latency on paid keys and x402 pay-per-call (free-tier live feeds are 5-min delayed), score 23,000+ Pump.fun deployers, surface deshred deploy signals ~500ms before on-chain confirmation, score 1M+ early-buyer wallets (incl. dump-cluster detection), push every pump.fun graduation, expose bundle-cohort supply retention (held % of supply), verify any wallet's current on-chain holdings, and stream every DEX trade. Free tier: 200 requests/day across 40+ endpoints (live feeds 5-min delayed) — no signup payment. Get a key at [madeonsol.com/pricing](https://madeonsol.com/pricing).
+<!-- Stats below are deliberate conservative floors kept in sync with the site's canonical labels (src/lib/constants.ts KOL_COUNT_LABEL / DEPLOYERS_PROFILED_LABEL / ALPHA_WALLETS_LABEL), rounded down from a live count measured on a known date and bumped only when the real count crosses the next threshold -- never the exact live number, which changes every minute. Do not replace with a live/volatile count. -->
+
+> Real-time Solana trading intelligence: track 2,000+ KOL wallets with <3s latency on paid keys and x402 pay-per-call (free-tier live feeds are 5-min delayed), score 85K+ Pump.fun deployers, surface deshred deploy signals ~500ms before on-chain confirmation, score 1.5M+ early-buyer wallets (incl. dump-cluster detection), push every pump.fun graduation, expose bundle-cohort supply retention (held % of supply), verify any wallet's current on-chain holdings, and stream every DEX trade. Free tier: 200 requests/day across 40+ endpoints (live feeds 5-min delayed) — no signup payment. Get a key at [madeonsol.com/pricing](https://madeonsol.com/pricing).
 
 > **New in 1.29.0 — deployer reputation as-of a date, and creator-fee rewards.** `rest.deployer_as_of(wallet, date=)` binds `GET /deployer-hunter/{wallet}/as-of`: the deployer's reputation exactly as it stood on `date` (default today, UTC) — the latest write-on-change snapshot at or before it, so a backtest sees only what was knowable then. `snapshot.snapshot_date` can predate the requested date (write-on-change); `snapshot.carried` is `True` when the state was recorded earlier and had not changed by then. No snapshot at or before `date` → `as_of: False, snapshot: None` — nothing is ever synthesized. `date` must be ≥ 2026-04-07 and not in the future. `rest.deployer_rewards(wallet)` binds `GET /deployer-hunter/{wallet}/rewards`: pump.fun creator-fee rewards, answered two ways that are never merged — `collected` (what actually reached the wallet: direct vault claims kept 90 days, social-handle claims, shareholder payouts on **any** token) and `attributed` (every payout on the tokens it **deployed**, split `to_self`/`to_others` + `redirected_pct`). Every money field is `{sol, usdc, usd}`; `usd` is `None` (never a silent 0) when a SOL amount exists and no SOL price was available. `top_tokens`/`top_recipients` (≤10, USD-sorted) show where attributed fees went, recipients flagged `is_self`/`is_social_pda`. Works for non-deployers too (`is_deployer: False`, `attributed` empty). **Keyed (`msk_`) API only — not on the x402 rail; BASIC gets HTTP 403.**
 
@@ -247,7 +249,7 @@ agent = Agent(role="Solana Analyst", tools=ALL_TOOLS)
 
 ### Alpha Wallet Intelligence
 
-Scored from 1M+ early-buyer records (wallets seen in the first 20 buyers of Pump.fun tokens).
+Scored from 1.5M+ early-buyer records (wallets seen in the first 20 buyers of Pump.fun tokens).
 
 | Method | Tier | Description |
 |---|---|---|

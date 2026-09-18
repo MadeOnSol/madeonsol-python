@@ -1930,6 +1930,31 @@ class MadeOnSolREST:
         """
         return self._request("POST", "/tokens/batch/risk", {"mints": mints})
 
+    def token_batch(self, mints: list[str]) -> dict[str, Any]:
+        """Bulk token snapshot for up to 50 mints, cheaper than N sequential
+        :meth:`token` calls (all tiers).
+
+        Returns the same per-mint shape as :meth:`token` (MC, holders,
+        velocity, MEV-share, history age) for every mint, batched into one
+        request. ULTRA callers additionally get wallet addresses inside each
+        mint's ``kol_activity.top_buyers``.
+
+        Args:
+            mints: 1–50 base58 token mint addresses. Duplicates are removed.
+        """
+        return self._request("POST", "/token/batch", {"mints": mints})
+
+    def tokens_batch_buyer_quality(self, mints: list[str]) -> dict[str, Any]:
+        """Bulk 0-100 buyer-quality scoring for up to 50 mints in one call.
+
+        Same per-mint shape as :meth:`token_buyer_quality`, batched into a
+        single request that counts as 1 request against quota.
+
+        Args:
+            mints: 1–50 base58 token mint addresses. Duplicates are removed.
+        """
+        return self._request("POST", "/tokens/batch/buyer-quality", {"mints": mints})
+
     def token_candles(
         self,
         mint: str,
