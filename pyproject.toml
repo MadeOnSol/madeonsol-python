@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "madeonsol-x402"
-version = "1.30.0"
+version = "1.31.0"
 description = "x402 client SDK for MadeOnSol Solana KOL intelligence API. Works with LangChain, CrewAI, and standalone."
 readme = "README.md"
 license = {text = "MIT"}

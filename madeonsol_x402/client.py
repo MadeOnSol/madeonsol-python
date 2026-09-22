@@ -567,8 +567,11 @@ class MadeOnSolClient:
         ``buy_tokens``, ``buy_supply_pct``, ``bought_tokens_after``,
         ``sold_tokens``, ``sold_sol``, ``first_sell_at``, ``last_sell_at``,
         live ``holdings_tokens`` / ``holdings_supply_pct``, ``wallet_empty``,
-        ``transferred_out``) plus ``as_of``. ``dev`` is ``None`` when the mint
-        has no tracked deploy row.
+        ``transfer_status`` -- suspected / none_detected / unknown; ``transferred_out``
+        is its deprecated boolean view) plus ``as_of``. ``dev`` is ``None`` when the mint
+        has no tracked deploy row. Score v2 (2026-09-21): ``assessment`` lists
+        ``unknown_inputs`` / ``not_assessed``; a token-supply burn is never LP evidence;
+        a failed score-critical read is HTTP 503 ``risk_inputs_unavailable``.
 
         Args:
             mint: Token mint address.
@@ -1162,7 +1165,9 @@ class MadeOnSolREST:
         """
         return self._request("POST", "/stream/token", {"rotate": True} if rotate else None)
 
-    def stream(self, *, auto_reconnect: bool = True, max_backoff: float = 30.0) -> "MadeOnSolStream":
+    def stream(
+        self, *, auto_reconnect: bool = True, max_backoff: float = 30.0, **stream_options: Any
+    ) -> "MadeOnSolStream":
         """Open a managed real-time WebSocket stream — auto-reconnect, token fetch
         (the token does not expire; ``get_stream_token()`` is called on every
         (re)connect), and typed callbacks. Requires the optional ``websockets`` extra::
@@ -1175,13 +1180,19 @@ class MadeOnSolREST:
             stream.on("kol:trade", lambda d: print(d["token_symbol"]))
             stream.subscribe(["kol:trades"])
             await stream.run()
+
+        ``stream_options`` go to :class:`MadeOnSolStream` — e.g. ``resume=``
+        (a cursor you persisted from ``stream.get_cursor()``), ``dedupe_size``,
+        ``max_auth_retries``, ``connection_limit_backoff``.
         """
         from .stream import MadeOnSolStream
 
         async def _token() -> dict[str, Any]:
             return await asyncio.to_thread(self.get_stream_token)
 
-        return MadeOnSolStream(_token, auto_reconnect=auto_reconnect, max_backoff=max_backoff)
+        return MadeOnSolStream(
+            _token, auto_reconnect=auto_reconnect, max_backoff=max_backoff, **stream_options
+        )
 
     def stream_sessions(self) -> dict[str, Any]:
         """List your live WebSocket sessions across both stream services (PRO+).
@@ -1433,8 +1444,11 @@ class MadeOnSolREST:
         ``buy_tokens``, ``buy_supply_pct``, ``bought_tokens_after``,
         ``sold_tokens``, ``sold_sol``, ``first_sell_at``, ``last_sell_at``,
         live ``holdings_tokens`` / ``holdings_supply_pct``, ``wallet_empty``,
-        ``transferred_out``) plus ``as_of``. ``dev`` is ``None`` when the mint
-        has no tracked deploy row.
+        ``transfer_status`` -- suspected / none_detected / unknown; ``transferred_out``
+        is its deprecated boolean view) plus ``as_of``. ``dev`` is ``None`` when the mint
+        has no tracked deploy row. Score v2 (2026-09-21): ``assessment`` lists
+        ``unknown_inputs`` / ``not_assessed``; a token-supply burn is never LP evidence;
+        a failed score-critical read is HTTP 503 ``risk_inputs_unavailable``.
 
         Args:
             mint: Token mint address.
