@@ -14,6 +14,8 @@ Python SDK for the [MadeOnSol](https://madeonsol.com) Solana KOL intelligence AP
 
 > Real-time Solana trading intelligence: track 2,000+ KOL wallets with <3s latency on paid keys and x402 pay-per-call (free-tier live feeds are 5-min delayed), score 85K+ Pump.fun deployers, surface deshred deploy signals ~500ms before on-chain confirmation, score 1.5M+ early-buyer wallets (incl. dump-cluster detection), push every pump.fun graduation, expose bundle-cohort supply retention (held % of supply), verify any wallet's current on-chain holdings, and stream every DEX trade. Free tier: 200 requests/day across 40+ endpoints (live feeds 5-min delayed) — no signup payment. Get a key at [madeonsol.com/pricing](https://madeonsol.com/pricing).
 
+> **New in 1.32.0 — named subscriptions: several independent subscriptions per socket.** `subscribe(channels, filters, sub_id="...")`, `update_subscription(sub_id, filters)`, `unsubscribe("sub-id")`, `get_subscriptions()` / `await list_subscriptions()`. Each named subscription has its own channels and filters (the server caps the total per connection, default included: PRO 5, ULTRA 10, BUSINESS 20); frames carry `evt["sub_id"]`; an event matching several subscriptions is delivered once per subscription (dedupe per `(sub_id, id)`). Resume is per subscription with one commit for the connection. The plain `subscribe(channels, filters)` API is unchanged. See "Named subscriptions" in the stream section.
+
 > **New in 1.31.0 — stream recovery: resume cursor, de-duplication, honest gaps.** The managed stream now tracks the cursor `{ instance, seq, ts }` of the last frame your handlers finished and resumes after it on every reconnect (the v1 `resume` request, with an automatic fallback to `replay_since_seq` / `replay_since_ts` on older servers). Delivery is at-least-once, de-duplicated by event `id`; new lifecycle events `cursor`, `replay`, `gap` (what could not be recovered — a `seq` gap is never loss) and `fatal`. Close codes are handled: 4001 re-fetches the token (bounded), 4002 waits ≥ 60 s instead of looping every second, 4003 stops, 4008 resumes; the backoff resets only after a `subscribed` ack. Every server `warning` frame is emitted (incl. `channels_rejected` / `channels_revoked`). `CHANNELS` gains `token:prices` (and `EVENT_NAMES` `token:price`); `client.stream(**options)` passes `resume=`, `dedupe_size=`, `max_auth_retries=`, `connection_limit_backoff=` through; the handshake token is URL-encoded. See the stream section's "Recovery" notes.
 
 > **New in 1.29.0 — deployer reputation as-of a date, and creator-fee rewards.** `rest.deployer_as_of(wallet, date=)` binds `GET /deployer-hunter/{wallet}/as-of`: the deployer's reputation exactly as it stood on `date` (default today, UTC) — the latest write-on-change snapshot at or before it, so a backtest sees only what was knowable then. `snapshot.snapshot_date` can predate the requested date (write-on-change); `snapshot.carried` is `True` when the state was recorded earlier and had not changed by then. No snapshot at or before `date` → `as_of: False, snapshot: None` — nothing is ever synthesized. `date` must be ≥ 2026-04-07 and not in the future. `rest.deployer_rewards(wallet)` binds `GET /deployer-hunter/{wallet}/rewards`: pump.fun creator-fee rewards, answered two ways that are never merged — `collected` (what actually reached the wallet: direct vault claims kept 90 days, social-handle claims, shareholder payouts on **any** token) and `attributed` (every payout on the tokens it **deployed**, split `to_self`/`to_others` + `redirected_pct`). Every money field is `{sol, usdc, usd}`; `usd` is `None` (never a silent 0) when a SOL amount exists and no SOL price was available. `top_tokens`/`top_recipients` (≤10, USD-sorted) show where attributed fees went, recipients flagged `is_self`/`is_social_pda`. Works for non-deployers too (`is_deployer: False`, `attributed` empty). **Keyed (`msk_`) API only — not on the x402 rail; BASIC gets HTTP 403.**
@@ -216,6 +218,26 @@ async def persist(data, evt):
 stream.on("cursor", save_cursor)               # {"instance", "seq", "ts"}
 stream.on("gap", lambda g: print("may be missing:", g["reasons"], g["skipped"]))  # g["advanced_past_gap"]
 stream.on("fatal", lambda f: print("stream stopped:", f["code"], f["reason"]))
+```
+
+### Named subscriptions *(new in 1.32.0)*
+
+One socket can hold several independent subscriptions, each with its own channels and filters; the server caps the total per connection, the default one included (PRO 5, ULTRA 10, BUSINESS 20). `subscribe(channels, filters)` stays the connection's `"default"` subscription and its wire is unchanged; `subscribe(channels, filters, sub_id="...")` opens a named one (1-64 characters of `A-Z a-z 0-9 _ . -`). A frame delivered under a named subscription carries `evt["sub_id"]`. **An event that matches several subscriptions is delivered once per matching subscription**, each copy stamped with its `sub_id`: the client dedupes per `(sub_id, id)`, so the same event can legitimately reach a handler twice, under two sub_ids. Filters of one subscription never affect another. `update_subscription(sub_id, filters)` REPLACES that subscription's filters (`"default"` addresses the plain one), `unsubscribe("my-sub")` / `unsubscribe(sub_id="my-sub")` removes it, `get_subscriptions()` is the local view and `await stream.list_subscriptions()` asks the server (`list` / `subscriptions`). Server refusals arrive as `warning` frames carrying the `sub_id` and one of `invalid_sub_id`, `too_many_subscriptions`, `unknown_sub_id`, `invalid_filters`, `channels_rejected`, `channels_revoked`, `replay_in_progress`; a subscription refused as `too_many_subscriptions` or `invalid_sub_id` is dropped locally so reconnects stop re-requesting it. Lifecycle events `updated` and `unsubscribed` surface the server acks.
+
+**Resume with several subscriptions** is per subscription: on every reconnect each subscription is re-sent with the same cursor, the server serves one replay per subscription, one after another (`replay_start` … `replay_end` each carry the `sub_id`; live frames are held until the last one ends), and the cursor commits once ALL of them have ended, at the smallest `last_seq` / `last_ts` across them. The `replay` event lists `subscriptions` and the raw `ends` per subscription; a gap's `channels` entries are keyed `sub_id/channel` for named subscriptions, and an incomplete retryable replay is retried for those subscriptions only. Against an older server that ignores `sub_id`, the client emits `warning` `named_subscriptions_unsupported` once.
+
+```python
+stream = client.stream()
+stream.subscribe(["kol:trades"], {"action": "buy", "min_sol": 1}, sub_id="kol-buys")
+stream.subscribe(["deployer:alerts"], {"deployer_tier": ["elite"]}, sub_id="deploys")
+
+@stream.on("kol:trade")
+def on_event(data, evt):
+    print(evt.get("sub_id"), data)   # "kol-buys"
+
+stream.update_subscription("kol-buys", {"action": "buy", "min_sol": 5})
+stream.unsubscribe("deploys")
+await stream.run()
 ```
 
 ## LangChain
