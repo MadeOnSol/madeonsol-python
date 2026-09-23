@@ -45,6 +45,9 @@ CHANNELS = (
     "token:locks",
     "token:fee_claims",
     "token:surges",
+    "token:candles",           # PRO+, mint-scoped: REQUIRES filters["mints"] (own cap 25/100/250); filters["updates"] = True adds the open minute
+    "token:risk",              # PRO+, mint-scoped: REQUIRES filters["mints"]; risk-INPUT changes + a risk:inputs snapshot
+    "wallet:scores",           # PRO+, wallet-scoped: REQUIRES filters["wallets"]; deployer tier + KOL score-state changes
 )
 
 # Event names delivered on those channels.
@@ -73,6 +76,14 @@ EVENT_NAMES = (
     "token:fee_claim",
     "token:surge",
     "token:revival",
+    # WS Phase 4 (2026-09-23)
+    "candle:closed",           # on token:candles — the stored 1-minute row (TokenCandleClosedEvent)
+    "candle:update",           # on token:candles with filters["updates"] = True — a state stream (no id/seq)
+    "risk:authority_changed",  # on token:risk
+    "risk:supply_inflated",    # on token:risk
+    "risk:inputs",             # on token:risk — snapshot frame (snapshot=True), current stored inputs per mint
+    "deployer:tier_changed",   # on wallet:scores
+    "kol:score_state_changed",  # on wallet:scores
 )
 
 # ── Lock lifecycle payloads (token:locks, opt-in filters["lifecycle"] = True) ──
@@ -148,6 +159,155 @@ class TokenUnlockScheduleEvent(TokenLockLifecycleBase, total=False):
     recipient: Optional[str]
     locked_amount_raw: Optional[str]
     withdrawn_raw: Optional[str]
+
+# ── WS Phase 4 payloads (2026-09-23) ──
+# token:candles filters: {"mints": [...] (REQUIRED, per-connection cap PRO 25 /
+# ULTRA 100 / BUSINESS 250, separate from token:prices), "updates": bool}.
+# token:risk filters: {"mints": [...] (REQUIRED, same caps), "risk_events":
+# [...subset], "risk_snapshot": bool (default True)}.
+# wallet:scores filters: {"wallets": [...] (REQUIRED, base58; may mix 0x
+# addresses when the subscription also holds rhc:wallet_scores), "score_events":
+# [...subset]}. Over a cap or without a scope the channel is rejected, never truncated.
+
+
+class TokenCandleClosedEvent(_TypedDict, total=False):
+    """candle:closed — the STORED token_ohlc_1m row, identical live and on a
+    durable resume. Frame id ``candle:solana:<mint>:<bucket_start epoch s>``.
+    A fully flat zero-trade candle is never emitted."""
+    chain: str          # "solana"
+    mint: str
+    bucket_start: str
+    bucket_end: str     # bucket_start + 60 s
+    closed_at: Optional[str]  # first write of the row
+    open_price_usd: Optional[float]
+    high_price_usd: Optional[float]
+    low_price_usd: Optional[float]
+    close_price_usd: Optional[float]
+    open_mc_usd: Optional[float]
+    high_mc_usd: Optional[float]
+    low_mc_usd: Optional[float]
+    close_mc_usd: Optional[float]
+    open_liquidity_usd: Optional[float]
+    close_liquidity_usd: Optional[float]
+    close_supply: Optional[float]
+    volume_usd: Optional[float]
+    volume_mev_usd: Optional[float]
+    buy_volume_usd: Optional[float]
+    sell_volume_usd: Optional[float]
+    trades: Optional[int]
+    buy_count: Optional[int]
+    sell_count: Optional[int]
+    dex: Optional[str]
+    pool_address: Optional[str]
+    write_id: Optional[str]
+    final: bool         # always True
+    source: str         # "token_ohlc_1m"
+
+
+class TokenCandleUpdateEvent(_TypedDict, total=False):
+    """candle:update (filters["updates"] = True) — the in-progress minute,
+    <= 1 per mint per second. State stream: no id/seq, never replayed."""
+    chain: str
+    mint: str
+    bucket_start: str
+    bucket_end: str
+    open_price_usd: Optional[float]
+    high_price_usd: Optional[float]
+    low_price_usd: Optional[float]
+    close_price_usd: Optional[float]
+    close_mc_usd: Optional[float]
+    volume_usd: Optional[float]
+    trades: Optional[int]
+    final: bool         # always False
+    as_of: Optional[str]
+    source: str         # "mc-tracker:open_candle"
+
+
+class TokenRiskAuthorityChangedEvent(_TypedDict, total=False):
+    """risk:authority_changed — mint / freeze authority revoked (once per mint +
+    field) or the Token-2022 transfer fee changed. Never a re-enable or a
+    first observation."""
+    chain: str
+    mint: str
+    event_key: str      # <mint>:mint_authority:revoked | <mint>:freeze_authority:revoked | <mint>:transfer_fee:<before>><after>:<ms>
+    field: str          # mint_authority | freeze_authority | transfer_fee
+    before: Dict[str, Any]  # {"revoked": bool} or {"transfer_fee_bps": int}
+    after: Dict[str, Any]
+    mint_authority_revoked: Optional[bool]
+    freeze_authority_revoked: Optional[bool]
+    transfer_fee_bps: Optional[int]
+    is_token_2022: Optional[bool]
+    observed_at: Optional[str]
+    previous_observed_at: Optional[str]
+    written_at: str
+    slot: None
+    source: str         # "token_prices"
+
+
+class TokenRiskSupplyInflatedEvent(_TypedDict, total=False):
+    """risk:supply_inflated — the first drift row reaching warn (0.5 %) or
+    danger (5 %). Per-observation drift, not cumulative."""
+    chain: str
+    mint: str
+    event_key: str      # <mint>:supply_inflated:warn | <mint>:supply_inflated:danger
+    level: str          # warn | danger
+    threshold_pct: float
+    inflation_pct: float
+    expected_supply_raw: str
+    onchain_supply_raw: str
+    drift_raw: str
+    detected_at: str
+    drift_event_id: int
+    window_days: int    # 30
+    written_at: str
+    slot: None
+    source: str         # "supply_drift_events"
+
+
+class TokenRiskInputsSnapshot(_TypedDict, total=False):
+    """risk:inputs snapshot frame (snapshot=True, no id/seq) — the current
+    stored risk inputs of one scoped mint; not the score or band."""
+    chain: str
+    mint: str
+    tracked: bool
+    mint_authority_revoked: Optional[bool]
+    freeze_authority_revoked: Optional[bool]
+    transfer_fee_bps: Optional[int]
+    is_token_2022: Optional[bool]
+    authority_observed_at: Optional[str]
+    supply_inflation: Optional[Dict[str, Any]]  # {inflation_pct, level (warn|danger|None), detected_at, window_days: 30}
+    source: str         # "token_prices+supply_drift_events"
+
+
+class DeployerTierChangedEvent(_TypedDict, total=False):
+    """deployer:tier_changed — deployers.tier changed ("recomputed at T").
+    Entering a ranked tier sets entered_ranking True (tier_before "unranked")."""
+    event_key: str      # <wallet>:<tier_before>><tier_after>:<txid>
+    chain: str
+    wallet: str
+    tier_before: Optional[str]  # elite | good | rising | moderate | cold | unranked
+    tier_after: Optional[str]
+    entered_ranking: bool
+    is_tracked: Optional[bool]
+    stats: Dict[str, Any]  # total_tokens_deployed, total_bonded, instant_bonds, bonding_rate, recent_bond_rate, recent_outcomes
+    computed_at: str
+    source: str         # live_write | scheduled_recompute | matview_refresh
+
+
+class KolScoreStateChangedEvent(_TypedDict, total=False):
+    """kol:score_state_changed — is_cold / is_heating_up / auto_strategy_tag
+    differ after an mv_kol_scores refresh (one event per KOL per refresh)."""
+    event_key: str      # <wallet>:<computed_at epoch ms>
+    chain: str
+    wallet: str
+    kol_wallet_id: Optional[str]
+    kol_name: Optional[str]
+    changed: List[str]
+    before: Optional[Dict[str, Any]]  # None for a first appearance
+    after: Dict[str, Any]
+    computed_at: str
+    source: str         # "matview_refresh"
+    matview: str        # "mv_kol_scores"
 
 # ── Shared stream core ─────────────────────────────────────────────────────
 # Everything below this line is IDENTICAL in madeonsol_x402/stream.py and

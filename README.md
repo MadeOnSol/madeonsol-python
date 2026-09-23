@@ -191,7 +191,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Channels: `kol:trades`, `kol:coordination`, `kol:first_touches`, `deployer:alerts`, `wallet_tracker:events`, `copytrade:signals`, `price_alert:events`, `sniper:deploys`, `token:graduations` (every pump.fun graduation in real time, tracked deployer or not), `token:prices` (event `token:price` — per-mint price/MC ticks; PRO+, REQUIRES `filters={"mints": [...]}` — PRO 25 / ULTRA 100 / BUSINESS 250 per connection; a state stream, never replayed), `token:locks` (event `token:lock` — every NEW Streamflow / Jupiter Lock / Bonfida lock or vesting contract, PRO+; LP locks not included), `token:fee_claims` (event `token:fee_claim` — every pump.fun fee event: distributions, social-handle claims, SharingConfig changes, PRO+; history starts 2026-08-17), `token:surges` (events `token:surge` — a token < 30 min old running ≥3× / ≥6× / ≥8× its launch MC, `tier` early / strong / breakout, each once per mint, sustained — and `token:revival` — ≥24 h with no trade candle, then confirmed buys on the tape, `tier` `None`; the same row as `rest.tokens_surges()` minus `outcome`, `risk_flags` included; subscribe filters `kinds`, `tiers`, `launchpads`, `exclude_flags`, `min_mc_usd` / `max_mc_usd`, `deployer_tier`; PRO+). Lifecycle events: `open`, `close`, `reconnect`, `subscribed`, `heartbeat`, `warning`, `cursor`, `replay`, `gap`, `fatal`, `error`.
+Channels: `kol:trades`, `kol:coordination`, `kol:first_touches`, `deployer:alerts`, `wallet_tracker:events`, `copytrade:signals`, `price_alert:events`, `sniper:deploys`, `token:graduations` (every pump.fun graduation in real time, tracked deployer or not), `token:prices` (event `token:price` — per-mint price/MC ticks; PRO+, REQUIRES `filters={"mints": [...]}` — PRO 25 / ULTRA 100 / BUSINESS 250 per connection; a state stream, never replayed), `token:locks` (event `token:lock` — every NEW Streamflow / Jupiter Lock / Bonfida lock or vesting contract, PRO+; LP locks not included), `token:fee_claims` (event `token:fee_claim` — every pump.fun fee event: distributions, social-handle claims, SharingConfig changes, PRO+; history starts 2026-08-17), `token:surges` (events `token:surge` — a token < 30 min old running ≥3× / ≥6× / ≥8× its launch MC, `tier` early / strong / breakout, each once per mint, sustained — and `token:revival` — ≥24 h with no trade candle, then confirmed buys on the tape, `tier` `None`; the same row as `rest.tokens_surges()` minus `outcome`, `risk_flags` included; subscribe filters `kinds`, `tiers`, `launchpads`, `exclude_flags`, `min_mc_usd` / `max_mc_usd`, `deployer_tier`; PRO+), `token:candles`, `token:risk`, `wallet:scores` (server 2026-09-23 — live 1-minute candles, risk-input changes and wallet-score changes; all PRO+ and scoped, see below). Lifecycle events: `open`, `close`, `reconnect`, `subscribed`, `heartbeat`, `warning`, `cursor`, `replay`, `gap`, `fatal`, `error`.
 
 ### Recovery: cursor, resume, de-duplication *(new in 1.31.0)*
 
@@ -251,6 +251,31 @@ stream.subscribe(["token:locks"], {"lifecycle": True, "events": ["token:lock_cla
 @stream.on("token:unlock_available")
 def on_unlock(data, evt):
     print(data["unlock_kind"], data["amount_raw"], "claimable, not claimed")
+
+await stream.run()
+```
+
+### Candles, risk inputs and wallet scores *(server 2026-09-23)*
+
+Three PRO+ channels, all **scoped** (per-connection cap PRO 25 / ULTRA 100 / BUSINESS 250 across named subscriptions; over the cap or without a scope the channel is rejected, never truncated). `token:candles` needs `"mints"` (a budget separate from `token:prices`): `candle:closed` is the stored 1-minute row (resumes durably; flat zero-trade minutes are skipped) and `"updates": True` adds `candle:update`, the in-progress minute (≤ 1 per mint per second, a state stream, never replayed). `token:risk` needs `"mints"`: `risk:authority_changed` (mint / freeze authority revoked, transfer fee changed), `risk:supply_inflated` (first 0.5 % / 5 % supply-drift crossing) and a `risk:inputs` snapshot per mint (`snapshot=True`) unless `"risk_snapshot": False`; optional `"risk_events"`. `wallet:scores` needs `"wallets"` (base58): `deployer:tier_changed` and `kol:score_state_changed`, each with `computed_at` + `source` ("recomputed at T", not "changed at T"); optional `"score_events"`. Payload TypedDicts in `madeonsol_x402.stream` (`TokenCandleClosedEvent`, `TokenRiskAuthorityChangedEvent`, `DeployerTierChangedEvent`, …).
+
+```python
+stream = client.stream()
+stream.subscribe(["token:candles"], {"mints": [MINT], "updates": True}, sub_id="candles")
+stream.subscribe(["token:risk"], {"mints": [MINT]}, sub_id="risk")
+stream.subscribe(["wallet:scores"], {"wallets": [DEPLOYER]}, sub_id="scores")
+
+@stream.on("candle:closed")
+def on_candle(data, evt):
+    print(data["bucket_start"], data["open_price_usd"], data["close_price_usd"], data["volume_usd"])
+
+@stream.on("risk:authority_changed")
+def on_risk(data, evt):
+    print(data["mint"], data["field"], data["before"], "->", data["after"])
+
+@stream.on("deployer:tier_changed")
+def on_tier(data, evt):
+    print(data["wallet"], data["tier_before"], "->", data["tier_after"], data["source"])
 
 await stream.run()
 ```
