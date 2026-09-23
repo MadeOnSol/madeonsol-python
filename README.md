@@ -240,6 +240,21 @@ stream.unsubscribe("deploys")
 await stream.run()
 ```
 
+### Lock lifecycle on `token:locks` *(server 2026-09-23)*
+
+Add `"lifecycle": True` to a `token:locks` subscription's filters to also receive what happens to a lock after it is created: `token:lock_claimed`, `token:lock_cancelled`, `token:lock_closed`, `token:lock_updated` (`change`: `topup` / `extended` / `schedule_changed` / `recipient_changed`, one event per change), `token:unlock_upcoming` (the lock's next unlock is within 24 h) and `token:unlock_available` (the unlock passed within the last 30 min — **claimable per the schedule, not claimed**). Without `lifecycle` the channel is unchanged. Optional filters: `events`, `unlock_kinds` (`cliff` / `period` / `final` / `tranche`), `mints` (≤ 500) and `include_automatic_claims` (default `False`: Streamflow keeper-cranked withdrawals, about 90 % of all claims, are hidden unless set). Payload TypedDicts live in `madeonsol_x402.stream` (`TokenLockClaimedEvent`, `TokenUnlockScheduleEvent`, …). Raw string amounts, no USD field; server-side dedupe, and no events for history.
+
+```python
+stream = client.stream()
+stream.subscribe(["token:locks"], {"lifecycle": True, "events": ["token:lock_claimed", "token:unlock_available"], "mints": [MINT]}, sub_id="locks")
+
+@stream.on("token:unlock_available")
+def on_unlock(data, evt):
+    print(data["unlock_kind"], data["amount_raw"], "claimable, not claimed")
+
+await stream.run()
+```
+
 ## LangChain
 
 ```python
@@ -548,6 +563,18 @@ asyncio.run(main())
 ```
 
 **Operations** (all carry `sub_id`): `subscribe`, `update` (replace filters in place), `unsubscribe`, `list`, `ping`. **Filters:** `token_mint(s)` (≤50), `wallet(s)` (≤50), `dex` (`pumpfun` | `pumpamm` | `pumpswap` | `raydium` | `jupiter` | `orca` | `meteora` | `launchlab`), `program`, `deployer_tier`, `token_age_max_seconds`, `market_cap_min/max_sol`, `min_sol`, `max_sol`, `action`. At least one targeting filter is required. Inbound rate limit: 5 messages/sec.
+
+**Liquidity events (server 2026-09-23).** Add `"liquidity": True` (in addition to trades) or `"liquidity": "only"` to a subscribe for `dex:liquidity` frames — one per liquidity instruction (`action` `pool_created` / `add` / `remove`), `id` = `<signature>:<ix>[.<inner>]`, with `pool`, `mints` (raw `amount_raw`, `side` in/out), `reserves_before` / `reserves_after`, `share_of_reserves` (constant-product pools only), `material` (a removal of ≥ 25 % of reserves) and `depth_effect`. Extra filters `pool(s)`, `actions`, `min_share_of_reserves`, `material_only`. Only fixture-verified instructions are emitted; concentrated pools (CLMM, Whirlpool, DLMM) report share/depth as unknown; DAMM v1, LaunchLab and Moonshot are not emitted; no USD field (`min_usd` is rejected); ring replay only.
+
+```python
+await ws.send(json.dumps({
+    "type": "subscribe",
+    "sub_id": "lp-pulls",
+    "liquidity": "only",
+    "filters": {"dex": ["raydium", "pumpswap", "meteora"], "actions": ["remove"], "material_only": True},
+}))
+# -> {"channel": "dex:liquidity", "sub_id": "lp-pulls", "id": ..., "data": {"action", "pool", "mints", "share_of_reserves", "material", ...}}
+```
 
 Full protocol reference: [madeonsol.com/api-docs#streaming](https://madeonsol.com/api-docs#streaming).
 

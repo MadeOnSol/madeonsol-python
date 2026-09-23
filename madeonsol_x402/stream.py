@@ -62,10 +62,92 @@ EVENT_NAMES = (
     "token:graduation",
     "token:price",             # on token:prices — a state tick: no id/seq, never replayed
     "token:lock",
+    # Lock lifecycle on token:locks — only for a subscription whose filters set
+    # "lifecycle": True (2026-09-23). Without it the channel carries token:lock only.
+    "token:lock_claimed",
+    "token:lock_cancelled",
+    "token:lock_closed",
+    "token:lock_updated",
+    "token:unlock_upcoming",
+    "token:unlock_available",  # claimable per the schedule, NOT claimed
     "token:fee_claim",
     "token:surge",
     "token:revival",
 )
+
+# ── Lock lifecycle payloads (token:locks, opt-in filters["lifecycle"] = True) ──
+# Filters (per subscription, AND): "lifecycle": True, "events": [...lifecycle
+# names], "unlock_kinds": ["cliff"|"period"|"final"|"tranche"], "mints": [...]
+# (<= 500, scopes creates AND lifecycle), "include_automatic_claims": bool
+# (default False — Streamflow keeper-cranked withdrawals, ~90 % of all claims,
+# are hidden unless True). Amounts are raw integer strings; no USD field.
+# Frame id = "<event>:<event_key>"; events are deduplicated server-side and
+# never emitted for history.
+try:
+    from typing import TypedDict as _TypedDict
+except ImportError:  # pragma: no cover
+    from typing_extensions import TypedDict as _TypedDict  # type: ignore
+
+
+class TokenLockLifecycleBase(_TypedDict, total=False):
+    event_key: str      # <lock_account>:<type>:<slot>[:<change>] or <lock_account>:<type>:<unlock epoch s>
+    lock_account: str
+    mint: str
+    program: str        # streamflow | jupiter_lock | bonfida_vesting
+    slot: Optional[int]  # null on schedule events
+    observed_at: Optional[str]
+    decimals: Optional[int]
+    tx_signature: Optional[str]
+
+
+class TokenLockClaimedEvent(TokenLockLifecycleBase, total=False):
+    """token:lock_claimed — withdrawn increased since the tracker's last observed state."""
+    claimed_raw: str
+    withdrawn_raw: str
+    remaining_raw: str
+    partial: bool
+    automatic_withdrawal: Optional[bool]
+    before: Dict[str, Any]
+    after: Dict[str, Any]
+
+
+class TokenLockCancelledEvent(TokenLockLifecycleBase, total=False):
+    cancelled_at: str
+    withdrawn_raw: Optional[str]
+    amount_raw: Optional[str]
+    before: Dict[str, Any]
+    after: Dict[str, Any]
+
+
+class TokenLockClosedEvent(TokenLockLifecycleBase, total=False):
+    reason: str         # closed_flag | account_closed
+    before: Dict[str, Any]
+    after: Dict[str, Any]
+
+
+class TokenLockUpdatedEvent(TokenLockLifecycleBase, total=False):
+    change: str         # topup | extended | schedule_changed | recipient_changed (one event per change)
+    added_raw: str      # topup only
+    fields: List[str]   # schedule_changed only
+    before: Dict[str, Any]
+    after: Dict[str, Any]
+
+
+class TokenUnlockScheduleEvent(TokenLockLifecycleBase, total=False):
+    """token:unlock_upcoming (next unlock within 24 h) / token:unlock_available
+    (passed within 30 min — claimable per the schedule, NOT claimed)."""
+    unlock_at: str
+    unlock_kind: str    # cliff | period | final | tranche
+    amount_raw: Optional[str]
+    amount_reason: Optional[str]
+    unlocked_total_raw: Optional[str]
+    release_model: str  # periodic | continuous | tranched
+    claimable: bool     # only on token:unlock_available
+    kind: Optional[str]
+    sender: Optional[str]
+    recipient: Optional[str]
+    locked_amount_raw: Optional[str]
+    withdrawn_raw: Optional[str]
 
 # ── Shared stream core ─────────────────────────────────────────────────────
 # Everything below this line is IDENTICAL in madeonsol_x402/stream.py and
