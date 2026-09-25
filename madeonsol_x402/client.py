@@ -858,9 +858,23 @@ class MadeOnSolREST:
         """Delete a webhook permanently."""
         return self._request("DELETE", f"/webhooks/{webhook_id}")
 
-    def test_webhook(self, webhook_id: int) -> dict[str, Any]:
-        """Send a test payload to verify a webhook URL."""
-        return self._request("POST", "/webhooks/test", {"webhook_id": webhook_id})
+    def test_webhook(self, webhook_id: int, *, event: str | None = None) -> dict[str, Any]:
+        """Send a test payload to verify a webhook URL.
+
+        Args:
+            webhook_id: The webhook to test.
+            event: Which of the webhook's subscribed events to sample (for
+                example 'kol:trade' or 'wallet_tracker:event'). Omit it to
+                sample the first subscribed event; an event the webhook is not
+                subscribed to is answered with 400.
+
+        Returns ``success``, ``status_code``, ``response_time_ms`` and, on
+        servers from 2026-09-25 on, ``event`` (the event type sampled).
+        """
+        body: dict[str, Any] = {"webhook_id": webhook_id}
+        if event is not None:
+            body["event"] = event
+        return self._request("POST", "/webhooks/test", body)
 
     # ── Sniper: deshred pre-confirm pump.fun deploys (PRO + ULTRA) ──
     # Reconstructed from shred-level ("deshred") data, deploys surface ~500ms
@@ -1228,6 +1242,8 @@ class MadeOnSolREST:
         """Inspect your account: tier, daily/burst quota state, subscription
         expiry, and per-feature usage. Use ``quota['daily']['remaining']`` for
         self-throttling without parsing rate-limit headers.
+        ``features['wallet_tracker_watchlist']`` carries ``used`` and, on
+        servers from 2026-09-25 on, ``limit`` (the watchlist cap).
         """
         return self._request("GET", "/me")
 
@@ -2104,7 +2120,7 @@ class MadeOnSolREST:
             )
         return self._request("GET", f"/tokens/{mint}/depth", params=params or None)
 
-    # ── Copy-Trade (PRO/ULTRA) ──
+    # ── Copy-Trade (PRO+) ──
 
     def copy_trade_list(self) -> dict[str, Any]:
         """List your copy-trade rules."""
@@ -2121,18 +2137,38 @@ class MadeOnSolREST:
         sizing_mode: str | None = None,
         delivery_mode: str | None = None,
         webhook_url: str | None = None,
+        min_mc_usd: float | None = None,
+        max_mc_usd: float | None = None,
     ) -> dict[str, Any]:
         """Create a copy-trade rule. Returns webhook_secret ONCE — store it.
 
+        Signals fire only for trades by wallets MadeOnSol tracks as KOLs (the
+        roster at ``GET /api/v1/kol/wallets``). Any valid Solana address is
+        accepted into a rule, but an untracked wallet never produces a signal.
+        On servers from 2026-09-25 on the response says which: the
+        subscription carries ``source_wallets_tracked`` /
+        ``source_wallets_untracked`` and ``warnings`` lists
+        ``untracked_source_wallets`` (or ``source_wallet_tracking_unavailable``).
+
         Args:
-            source_wallets: Wallets to follow. PRO=5/rule, ULTRA=50/rule.
-            sizing_amount: Amount used by the chosen sizing_mode.
+            source_wallets: Tracked KOL wallets to follow. The per-rule limit is
+                set by your tier and enforced by the server: PRO 5, ULTRA 50,
+                BUSINESS 250 (Enterprise follows Business).
+            sizing_amount: SOL when sizing_mode is 'fixed'; otherwise a
+                multiplier / fraction of the source size (0.25 = a quarter),
+                never a percent.
             name: Optional human label.
             min_trade_sol: Minimum source-wallet trade size to fire a signal.
-            only_action: 'buy', 'sell', or 'both' (default 'both').
-            sizing_mode: 'fixed', 'proportional', or 'percent_source'.
+            only_action: 'buy', 'sell', or 'both'. When omitted the server
+                default 'buy' applies.
+            sizing_mode: 'fixed' (default), 'proportional' or 'percent_source'
+                (the last two are the same maths: source size × sizing_amount).
             delivery_mode: 'webhook', 'websocket', or 'both'.
             webhook_url: Required when delivery_mode includes 'webhook'.
+            min_mc_usd: Lower bound (USD, 0 to 1e12) on the source trade's
+                market cap at trade time. When a bound is set, trades with an
+                unknown market cap are dropped.
+            max_mc_usd: Upper bound (USD, 0 to 1e12); must be >= min_mc_usd.
         """
         body: dict[str, Any] = {
             "source_wallets": source_wallets,
@@ -2144,6 +2180,8 @@ class MadeOnSolREST:
         if sizing_mode is not None: body["sizing_mode"] = sizing_mode
         if delivery_mode is not None: body["delivery_mode"] = delivery_mode
         if webhook_url is not None: body["webhook_url"] = webhook_url
+        if min_mc_usd is not None: body["min_mc_usd"] = min_mc_usd
+        if max_mc_usd is not None: body["max_mc_usd"] = max_mc_usd
         return self._request("POST", "/copytrade/subscriptions", body)
 
     def copy_trade_get(self, subscription_id: int) -> dict[str, Any]:
@@ -2154,7 +2192,17 @@ class MadeOnSolREST:
         """Update a copy-trade rule.
 
         Accepts: name, source_wallets, min_trade_sol, only_action, sizing_mode,
-        sizing_amount, delivery_mode, webhook_url, is_active.
+        sizing_amount, delivery_mode, webhook_url, is_active, min_mc_usd,
+        max_mc_usd. Omit a field to leave it unchanged; pass None for
+        min_mc_usd / max_mc_usd to clear that bound.
+
+        Returns ``{"subscription": {...}}``. On servers from 2026-09-25 on the
+        subscription also carries ``source_wallets_tracked`` /
+        ``source_wallets_untracked``, and ``warnings`` (codes
+        ``untracked_source_wallets`` / ``source_wallet_tracking_unavailable``)
+        appears when a wallet can never fire. When this PATCH sets a
+        ``webhook_url`` on a rule that had no signing secret yet, the response
+        also carries ``webhook_secret`` (shown ONCE — store it) and ``note``.
         """
         return self._request("PATCH", f"/copytrade/subscriptions/{subscription_id}", kwargs)
 
@@ -2372,7 +2420,8 @@ class MadeOnSolREST:
             wallet_address: Solana wallet address to track.
             label: Optional human-readable label.
         Returns HTTP 409 if already tracked or tier limit reached.
-        Limits: BASIC=10, PRO=50, ULTRA=100.
+        Limits: PRO 50, ULTRA 100, BUSINESS 500 (the Free tier has no wallet
+        tracker).
         """
         body: dict[str, Any] = {"wallet_address": wallet_address}
         if label is not None:
@@ -2395,16 +2444,32 @@ class MadeOnSolREST:
         event_type: str | None = None,
         limit: int = 50,
         before: int | None = None,
+        order: str | None = None,
+        before_slot: int | None = None,
     ) -> dict[str, Any]:
-        """Historical swap/transfer events for all watched wallets.
+        """Historical swap/transfer events for all watched wallets (PRO+).
+
+        Returns ``{"events": [...], "count", "ordered_by", "next_cursor",
+        "next_cursor_slot"}``. Each event carries wallet_address, label,
+        event_type, action (``None`` on transfers), token_mint, token_symbol,
+        token_name, sol_amount, token_amount, counterparty (only when matched),
+        tx_signature, block_time (ingest clock), slot (chain order), replayed,
+        ingested_at and timestamp.
 
         Args:
             wallet: Filter to a specific wallet address.
-            action: Filter by action ('buy', 'sell', 'transfer_in', 'transfer_out').
+            action: 'buy' or 'sell'. Swaps only: transfers have action None,
+                select them with event_type='transfer'. Any other value is
+                rejected by the API with 400.
             event_type: Filter by event type ('swap' or 'transfer').
             limit: Max results (1–200). Default: 50.
-            before: Pagination cursor — block_time of the last event from previous page.
-        BASIC: truncated wallets, no tx_signature, no counterparty.
+            before: Legacy cursor for order='block_time': the previous page's
+                ``next_cursor``.
+            order: 'slot' (on-chain order, the default on a first page) or
+                'block_time' (ingest clock, the default when ``before`` is
+                passed).
+            before_slot: Cursor for order='slot': the previous page's
+                ``next_cursor_slot``.
         """
         params: dict[str, Any] = {"limit": limit}
         if wallet:
@@ -2415,6 +2480,10 @@ class MadeOnSolREST:
             params["event_type"] = event_type
         if before is not None:
             params["before"] = before
+        if order:
+            params["order"] = order
+        if before_slot is not None:
+            params["before_slot"] = before_slot
         return self._request("GET", "/wallet-tracker/trades", params=params)
 
     def wallet_tracker_summary(

@@ -14,6 +14,8 @@ Python SDK for the [MadeOnSol](https://madeonsol.com) Solana KOL intelligence AP
 
 > Real-time Solana trading intelligence: track 2,000+ KOL wallets with <3s latency on paid keys and x402 pay-per-call (free-tier live feeds are 5-min delayed), score 85K+ Pump.fun deployers, surface deshred deploy signals ~500ms before on-chain confirmation, score 1.5M+ early-buyer wallets (incl. dump-cluster detection), push every pump.fun graduation, expose bundle-cohort supply retention (held % of supply), verify any wallet's current on-chain holdings, and stream every DEX trade. Free tier: 200 requests/day across 40+ endpoints (live feeds 5-min delayed) — no signup payment. Get a key at [madeonsol.com/pricing](https://madeonsol.com/pricing).
 
+> **New in 1.35.0 — copy-trade market-cap band on rules, Wallet Tracker slot ordering.** `rest.copy_trade_create(..., min_mc_usd=, max_mc_usd=)` sets a market-cap band (USD) on the rule; before, passing either raised `TypeError`. `copy_trade_update` documents the same two fields (`None` clears a bound). `rest.wallet_tracker_trades()` gains `order=` (`"slot"` | `"block_time"`) and the `before_slot=` cursor. Docstrings corrected: `only_action` defaults to `"buy"` (not `"both"`); the Wallet Tracker `action` filter is `"buy"` | `"sell"` only, since `transfer_in` / `transfer_out` were never accepted by the API; copy-trade limits include Business (250 wallets per rule); signals fire only for tracked KOL wallets. `rest.test_webhook(id, event=)` can pick which subscribed event to sample. Docstrings describe the optional fields newer servers return: `source_wallets_tracked` / `source_wallets_untracked` / `warnings` on copy-trade rules, a one-time `webhook_secret` on a `copy_trade_update` that first sets a `webhook_url`, `event` on test results, and `/me` watchlist `limit`. No existing call changes behaviour.
+
 > **New in 1.32.0 — named subscriptions: several independent subscriptions per socket.** `subscribe(channels, filters, sub_id="...")`, `update_subscription(sub_id, filters)`, `unsubscribe("sub-id")`, `get_subscriptions()` / `await list_subscriptions()`. Each named subscription has its own channels and filters (the server caps the total per connection, default included: PRO 5, ULTRA 10, BUSINESS 20); frames carry `evt["sub_id"]`; an event matching several subscriptions is delivered once per subscription (dedupe per `(sub_id, id)`). Resume is per subscription with one commit for the connection. The plain `subscribe(channels, filters)` API is unchanged. See "Named subscriptions" in the stream section.
 
 > **New in 1.31.0 — stream recovery: resume cursor, de-duplication, honest gaps.** The managed stream now tracks the cursor `{ instance, seq, ts }` of the last frame your handlers finished and resumes after it on every reconnect (the v1 `resume` request, with an automatic fallback to `replay_since_seq` / `replay_since_ts` on older servers). Delivery is at-least-once, de-duplicated by event `id`; new lifecycle events `cursor`, `replay`, `gap` (what could not be recovered — a `seq` gap is never loss) and `fatal`. Close codes are handled: 4001 re-fetches the token (bounded), 4002 waits ≥ 60 s instead of looping every second, 4003 stops, 4008 resumes; the backoff resets only after a `subscribed` ack. Every server `warning` frame is emitted (incl. `channels_rejected` / `channels_revoked`). `CHANNELS` gains `token:prices` (and `EVENT_NAMES` `token:price`); `client.stream(**options)` passes `resume=`, `dedupe_size=`, `max_auth_retries=`, `connection_limit_backoff=` through; the handshake token is URL-encoded. See the stream section's "Recovery" notes.
@@ -407,7 +409,7 @@ res = client.rest.coordination_alerts_create(
 
 `coordination_alerts_list()`, `coordination_alerts_get(id)`, `coordination_alerts_update(id, **fields)`, `coordination_alerts_delete(id)`.
 
-**Webhook signature:** `X-MadeOnSol-Signature: sha256=<hmac>` where `hmac = HMAC-SHA256(webhook_secret, timestamp + "." + rawBody)`, and `X-MadeOnSol-Timestamp` carries the unix seconds used.
+**Webhook signature:** `X-MadeOnSol-Signature` is the lowercase hex HMAC-SHA256 (no prefix) of `` `${X-MadeOnSol-Timestamp}.${rawBody}` ``, keyed with `webhook_secret` used as-is (do not hex-decode it). `X-MadeOnSol-Timestamp` is unix **milliseconds** and is regenerated on every retry. Compute the HMAC over the exact raw request bytes, compare in constant time over equal-length buffers (validate the header as 64 hex characters first), and reject stale deliveries (for example older than 5 minutes) on your side: the server does not enforce a replay window. Full Node.js and Python verifiers: https://madeonsol.com/api-docs#webhook-payload
 
 **The `kol_coordination()` response** now includes v1.1 fields: `peak_window_start/end`, `peak_kols`, `peak_buys` (the busiest slice within the period), `exited_count` + per-KOL `exited` (net-flow-negative wallets), and `coordination_score` (0-100). Pass `min_score=`, `window_minutes=`, `include_majors=` to filter.
 
@@ -487,28 +489,28 @@ s = data["stats"]
 # s["biggest_miss"]  — token with the highest post-exit gain the wallet missed
 ```
 
-### Copy-Trade Rules (PRO/ULTRA)
+### Copy-Trade Rules (PRO+)
 
-Server-side rules that fire signals when one of your watched source wallets trades. Delivered via webhook (HMAC-signed) and/or WebSocket. PRO=3 rules × 5 source wallets each; ULTRA=20 × 50.
+Server-side rules that fire signals when one of your source wallets trades. Delivered via webhook (HMAC-signed) and/or WebSocket. Limits: PRO 3 rules × 5 source wallets each, ULTRA 20 × 50, BUSINESS 100 × 250 (Enterprise follows Business). The server enforces them per tier. Signals fire only for trades by wallets MadeOnSol tracks as KOLs (the roster at `GET /api/v1/kol/wallets`): a rule accepts any valid Solana address, but an untracked wallet never produces a signal. `only_action` defaults to `"buy"` when omitted. `min_mc_usd` / `max_mc_usd` restrict a rule to source trades inside a market-cap band (USD); when a bound is set, trades with an unknown market cap are dropped.
 
 | Method | Description |
 |---|---|
 | `rest.copy_trade_list()` | List your rules |
-| `rest.copy_trade_create(source_wallets, sizing_amount, ...)` | Create a rule. Returns `webhook_secret` **once** — store it |
+| `rest.copy_trade_create(source_wallets, sizing_amount, ..., min_mc_usd=, max_mc_usd=)` | Create a rule. Returns `webhook_secret` **once** — store it |
 | `rest.copy_trade_get(id)` | Get one rule |
-| `rest.copy_trade_update(id, **fields)` | Update fields or toggle `is_active` |
+| `rest.copy_trade_update(id, **fields)` | Update fields or toggle `is_active`; `min_mc_usd=None` / `max_mc_usd=None` clears a bound |
 | `rest.copy_trade_delete(id)` | Delete permanently |
-| `rest.copy_trade_signals(subscription_id=, since=, limit=)` | Recent fired signals (up to 7 days, 1–500) |
+| `rest.copy_trade_signals(subscription_id=, since=, limit=, min_mc_usd=, max_mc_usd=)` | Recent fired signals (up to 7 days, 1–500) |
 
 ### Wallet Tracker
 
 | Method | Description |
 |---|---|
-| `rest.wallet_tracker_watchlist()` | List tracked wallets and remaining capacity (Free: 10, Pro: 50, Ultra: 100) |
+| `rest.wallet_tracker_watchlist()` | List tracked wallets and remaining capacity (Pro: 50, Ultra: 100, Business: 500; the Free tier has no wallet tracker) |
 | `rest.wallet_tracker_add(wallet_address, label=)` | Add wallet to watchlist |
 | `rest.wallet_tracker_remove(wallet_address)` | Remove wallet from watchlist |
 | `rest.wallet_tracker_update_label(wallet_address, label)` | Update wallet label |
-| `rest.wallet_tracker_trades(wallet=, action=, event_type=, limit=, before=)` | Historical swap/transfer events (120-day retention) |
+| `rest.wallet_tracker_trades(wallet=, action=, event_type=, limit=, order=, before_slot=, before=)` | Historical swap/transfer events (120-day retention). Returns `events` + `next_cursor` / `next_cursor_slot`. `action` is `"buy"` or `"sell"` (swaps only; transfers have `action` None, select them with `event_type="transfer"`). `order="slot"` (default) pages with `before_slot`; `order="block_time"` with the legacy `before` |
 | `rest.wallet_tracker_summary(period=, wallet=)` | Per-wallet stats: swap counts, SOL bought/sold, last event |
 
 ### Universal Wallet API *(new in 1.8)*
@@ -534,7 +536,7 @@ Per-wallet endpoints that work on **any** Solana wallet, not just curated KOLs. 
 | `rest.get_webhook(id)` | Get one + recent delivery log |
 | `rest.update_webhook(id, **kwargs)` | Update URL, events, filters, or re-enable |
 | `rest.delete_webhook(id)` | Delete permanently |
-| `rest.test_webhook(id)` | Send test payload |
+| `rest.test_webhook(id, event=)` | Send test payload; `event` picks which subscribed event to sample (default: the first). Newer servers echo the sampled `event` |
 | `rest.get_stream_token(rotate=False)` | Issue your WebSocket streaming token (returns `ws_url` + `dex_ws_url`). **Never expires** (1.27.1) — same token on every call; `rotate=True` replaces it (old value works 60 s more). `expires_at` / `next_refresh_at` are always `None` |
 | `rest.stream_sessions()` | **New 1.19** · PRO+ · List your live WebSocket sessions (`id`, `service`, `tier`, `channels`, `connected_at`, `remote_ip`, `messages_sent`) across both stream services |
 | `rest.kill_stream_session(id)` | **New 1.19** · PRO+ · Force-terminate one of your sessions by `id` and free its slot — self-serve fix for a 4002 connection-limit lockout |
@@ -587,7 +589,7 @@ async def main():
 asyncio.run(main())
 ```
 
-**Operations** (all carry `sub_id`): `subscribe`, `update` (replace filters in place), `unsubscribe`, `list`, `ping`. **Filters:** `token_mint(s)` (≤50), `wallet(s)` (≤50), `dex` (`pumpfun` | `pumpamm` | `pumpswap` | `raydium` | `jupiter` | `orca` | `meteora` | `launchlab`), `program`, `deployer_tier`, `token_age_max_seconds`, `market_cap_min/max_sol`, `min_sol`, `max_sol`, `action`. At least one targeting filter is required. Inbound rate limit: 5 messages/sec.
+**Operations** (all carry `sub_id`): `subscribe`, `update` (replace filters in place), `unsubscribe`, `list`, `ping`. **Filters:** `token_mint(s)` (≤50), `wallet(s)` (≤50), `dex` (`pumpfun` | `pumpswap` | `raydium` | `jupiter` | `orca` | `meteora` | `launchlab` | `moonshot`), `program`, `deployer_tier`, `token_age_max_seconds`, `market_cap_min/max_sol`, `min_sol`, `max_sol`, `action`. At least one targeting filter is required. Inbound rate limit: 5 messages/sec.
 
 **Liquidity events (server 2026-09-23).** Add `"liquidity": True` (in addition to trades) or `"liquidity": "only"` to a subscribe for `dex:liquidity` frames — one per liquidity instruction (`action` `pool_created` / `add` / `remove`), `id` = `<signature>:<ix>[.<inner>]`, with `pool`, `mints` (raw `amount_raw`, `side` in/out), `reserves_before` / `reserves_after`, `share_of_reserves` (constant-product pools only), `material` (a removal of ≥ 25 % of reserves) and `depth_effect`. Extra filters `pool(s)`, `actions`, `min_share_of_reserves`, `material_only`. Only fixture-verified instructions are emitted; concentrated pools (CLMM, Whirlpool, DLMM) report share/depth as unknown; DAMM v1, LaunchLab and Moonshot are not emitted; no USD field (`min_usd` is rejected); ring replay only.
 
