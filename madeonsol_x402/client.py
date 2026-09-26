@@ -20,6 +20,38 @@ if TYPE_CHECKING:
 
 BASE_URL = "https://madeonsol.com"
 
+# x402-prefixed paths this client calls that have NO keyless x402 route:
+# the server's x402 price catalog never listed them and production answers 404.
+# They work with an api_key (the prefix is rewritten to ``/api/v1/``); in x402
+# (private-key) mode the method raises before any request or payment.
+# ``{param}`` stands for one path segment.
+X402_UNAVAILABLE_PATHS: tuple[str, ...] = (
+    "/api/x402/kol/scouts/leaderboard",
+    "/api/x402/kol/coordination/history",
+    "/api/x402/tokens/{mint}/kol-consensus",
+    "/api/x402/tokens/{mint}/peak-history",
+)
+
+
+class KeylessNotAvailableError(RuntimeError):
+    """Raised in x402 mode for a method whose path has no keyless x402 route.
+
+    Same name as the Robinhood Chain SDK's error.
+    """
+
+
+def x402_unavailable_path(path: str) -> str | None:
+    """The unavailable template ``path`` matches, or None when x402 serves it."""
+    bare = path.split("?", 1)[0].split("/")
+    for template in X402_UNAVAILABLE_PATHS:
+        parts = template.split("/")
+        if len(parts) == len(bare) and all(
+            (t.startswith("{") and t.endswith("}") and b) or t == b
+            for t, b in zip(parts, bare)
+        ):
+            return template
+    return None
+
 
 class MadeOnSolClient:
     """MadeOnSol Solana API client.
@@ -91,7 +123,20 @@ class MadeOnSolClient:
             return path.replace("/api/x402/", "/api/v1/")
         return path
 
+    def _check_x402_available(self, path: str) -> None:
+        if self._auth_mode != "x402":
+            return
+        template = x402_unavailable_path(path)
+        if template:
+            raise KeylessNotAvailableError(
+                f"{template} is not available via x402 (no keyless route; the server "
+                "answers 404). Use an API-key client instead: "
+                "MadeOnSolClient(api_key=os.environ['MADEONSOL_API_KEY']). "
+                "Free key at https://madeonsol.com/pricing"
+            )
+
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._check_x402_available(path)
         api_path = self._resolve_path(path)
         if self._auth_mode == "x402":
             from x402.http.clients import x402HttpxClient
@@ -478,6 +523,10 @@ class MadeOnSolClient:
         """v1.9 — Scout leaderboard: top KOLs ranked by scout score, first-touch
         frequency, and swarm attraction rate. ULTRA only.
 
+        **API key only:** there is no keyless x402 route for this path, so in
+        x402 (private-key) mode it raises ``KeylessNotAvailableError`` before any
+        request or payment.
+
         Args:
             limit: Max entries to return.
             scout_tier: Filter to 'S', 'A', 'B', or 'C'.
@@ -499,6 +548,10 @@ class MadeOnSolClient:
         """v1.9 — Coordination history: past coordination alert fires with token,
         score, KOL count. ULTRA only.
 
+        **API key only:** there is no keyless x402 route for this path, so in
+        x402 (private-key) mode it raises ``KeylessNotAvailableError`` before any
+        request or payment.
+
         Args:
             limit: Max entries.
             since: ISO 8601 — events after this timestamp.
@@ -514,6 +567,10 @@ class MadeOnSolClient:
         """v1.9 — KOL consensus on a token: buyers/sellers, exit rate, net flow,
         median entry MC. ULTRA gets individual wallet arrays.
 
+        **API key only:** there is no keyless x402 route for this path, so in
+        x402 (private-key) mode it raises ``KeylessNotAvailableError`` before any
+        request or payment.
+
         Args:
             mint: Token mint address.
         """
@@ -522,6 +579,10 @@ class MadeOnSolClient:
     def peak_history(self, mint: str) -> dict[str, Any]:
         """v1.9 — Peak MC history: ATH, decline from peak, MC at bond and at
         1h/6h/24h/7d after bond.
+
+        **API key only:** there is no keyless x402 route for this path, so in
+        x402 (private-key) mode it raises ``KeylessNotAvailableError`` before any
+        request or payment.
 
         Args:
             mint: Token mint address.
@@ -551,9 +612,10 @@ class MadeOnSolClient:
         return await self._get(f"/api/x402/tokens/{mint}/flow", {"window": window})
 
     def token_risk(self, mint: str) -> dict[str, Any]:
-        """Transparent 0–100 token safety/rug-risk score with a per-factor
-        breakdown (liquidity, mint/freeze authority, LP status, holder
-        concentration) — the "is this safe to buy?" decision call.
+        """Transparent 0–100 token risk score (higher = riskier) with a
+        per-factor breakdown (liquidity, mint/freeze authority, LP status,
+        holder concentration) — risk evidence for your own policy, not a
+        verdict.
 
         v1.22 — ``inputs`` gains ``sniper_footprint``: the slot-window
         launch-snipe rollup (``buys``, ``buyers``, ``sol``, ``supply_pct``,
@@ -1063,7 +1125,9 @@ class MadeOnSolREST:
     def deployer_profile(self, wallet: str) -> dict[str, Any]:
         """One deployer's profile — tier, bond rates, totals, runner rate.
 
-        An untracked wallet returns a profile with zeroed counters, not a 404.
+        An untracked wallet returns HTTP 200 with ``is_deployer`` False and
+        ``deployer`` None, not a 404; the counters (``total_tokens_deployed``,
+        ``total_bonded``, ...) live under ``deployer``.
         Gate ``runner_rate`` on ``labeled_tokens >= 3``.
 
         Args:
@@ -1442,7 +1506,7 @@ class MadeOnSolREST:
         return self._request("GET", f"/tokens/{mint}/buyer-quality")
 
     def token_risk(self, mint: str) -> dict[str, Any]:
-        """Transparent 0–100 token rug-risk/safety score (higher = riskier).
+        """Transparent 0–100 token risk score (higher = riskier): risk evidence for your own policy, not a verdict.
 
         Returns ``risk_score``, a ``band`` ('safe' | 'caution' | 'danger'), an
         explainable ``factors`` array, and the raw ``inputs`` (mint/freeze
@@ -1943,7 +2007,7 @@ class MadeOnSolREST:
         )
 
     def tokens_batch_risk(self, mints: list[str]) -> dict[str, Any]:
-        """Bulk token rug-risk/safety scoring — up to 50 mints in one call (PRO+).
+        """Bulk token risk scoring (evidence, not a verdict) — up to 50 mints in one call (PRO+).
 
         Scores 1–50 base58 mints in a single request that counts as 1 request
         against quota. Returns ``{"tokens": [...], "count": N}`` where each

@@ -14,6 +14,8 @@ Python SDK for the [MadeOnSol](https://madeonsol.com) Solana KOL intelligence AP
 
 > Real-time Solana trading intelligence: track 2,000+ KOL wallets with <3s latency on paid keys and x402 pay-per-call (free-tier live feeds are 5-min delayed), score 85K+ Pump.fun deployers, surface deshred deploy signals ~500ms before on-chain confirmation, score 1.5M+ early-buyer wallets (incl. dump-cluster detection), push every pump.fun graduation, expose bundle-cohort supply retention (held % of supply), verify any wallet's current on-chain holdings, and stream every DEX trade. Free tier: 200 requests/day across 40+ endpoints (live feeds 5-min delayed) — no signup payment. Get a key at [madeonsol.com/pricing](https://madeonsol.com/pricing).
 
+> **New in 1.36.0: keyless calls that x402 cannot serve now fail fast.** In x402 (keyless) mode, `scout_leaderboard`, `coordination_history`, `kol_consensus` and `peak_history` raise `KeylessNotAvailableError` (a `RuntimeError`) before any request or payment: those routes are not priced for x402 and returned 404. With an API key they work as before. `X402_UNAVAILABLE_PATHS` is exported. Token risk is described as risk evidence for your own policy, not a verdict (no "safety score" wording). The deployer-profile description names the fields the API returns: `is_deployer` and the nested `deployer` object (`total_tokens_deployed`, ...); an untracked wallet returns `is_deployer: false` and `deployer: null`.
+
 > **New in 1.35.0 — copy-trade market-cap band on rules, Wallet Tracker slot ordering.** `rest.copy_trade_create(..., min_mc_usd=, max_mc_usd=)` sets a market-cap band (USD) on the rule; before, passing either raised `TypeError`. `copy_trade_update` documents the same two fields (`None` clears a bound). `rest.wallet_tracker_trades()` gains `order=` (`"slot"` | `"block_time"`) and the `before_slot=` cursor. Docstrings corrected: `only_action` defaults to `"buy"` (not `"both"`); the Wallet Tracker `action` filter is `"buy"` | `"sell"` only, since `transfer_in` / `transfer_out` were never accepted by the API; copy-trade limits include Business (250 wallets per rule); signals fire only for tracked KOL wallets. `rest.test_webhook(id, event=)` can pick which subscribed event to sample. Docstrings describe the optional fields newer servers return: `source_wallets_tracked` / `source_wallets_untracked` / `warnings` on copy-trade rules, a one-time `webhook_secret` on a `copy_trade_update` that first sets a `webhook_url`, `event` on test results, and `/me` watchlist `limit`. No existing call changes behaviour.
 
 > **New in 1.32.0 — named subscriptions: several independent subscriptions per socket.** `subscribe(channels, filters, sub_id="...")`, `update_subscription(sub_id, filters)`, `unsubscribe("sub-id")`, `get_subscriptions()` / `await list_subscriptions()`. Each named subscription has its own channels and filters (the server caps the total per connection, default included: PRO 5, ULTRA 10, BUSINESS 20); frames carry `evt["sub_id"]`; an event matching several subscriptions is delivered once per subscription (dedupe per `(sub_id, id)`). Resume is per subscription with one commit for the connection. The plain `subscribe(channels, filters)` API is unchanged. See "Named subscriptions" in the stream section.
@@ -331,6 +333,8 @@ agent = Agent(role="Solana Analyst", tools=ALL_TOOLS)
 | `deployer_trajectory(wallet)` | **New 1.22** · Deployer skill curve — streaks, rolling bond rate, trend. $0.01 |
 | `discovery()` | Free — list all endpoints and prices (25 keyless x402 endpoints) |
 
+**API key only (not on the x402 rail):** `scout_leaderboard()`, `coordination_history()`, `kol_consensus()` and `peak_history()` have no keyless x402 route (the server answers 404). With an `api_key` they call `/api/v1/` as before; in private-key (x402) mode they raise `KeylessNotAvailableError` before any request or payment. The list is exported as `X402_UNAVAILABLE_PATHS`. `discovery()` returns the live x402 catalog.
+
 ### REST API — KOL/deployer detail
 
 | Method | Description |
@@ -356,7 +360,7 @@ Scored from 1.5M+ early-buyer records (wallets seen in the first 20 buyers of Pu
 |---|---|---|
 | `rest.token_cap_table(mint)` | PRO+ | First non-deployer early buyers, enriched with PnL/KOL/bot flags. PRO=10, ULTRA=20 |
 | `rest.token_buyer_quality(mint)` | All | 0–100 buyer-quality score + full breakdown (5-min cached) |
-| `rest.token_risk(mint)` | PRO+ | Transparent 0–100 rug-risk/safety score with `band`, explainable `factors`, and raw `inputs` |
+| `rest.token_risk(mint)` | PRO+ | Transparent 0–100 risk score (evidence, not a verdict) with `band`, explainable `factors`, and raw `inputs` |
 | `rest.token_bundle(mint)` | **New 1.20** · All | Bundle-cohort holdings — `bundle` summary with `held_pct_of_supply` (headline), `bundle_kind`, `fully_exited`. BASIC=summary only, PRO=+top-10 wallet flags, ULTRA=+identity |
 | `rest.tokens_batch_risk(mints)` | **New 1.19** · PRO+ | Bulk risk scoring for 1–50 mints in one call (1 request). Each entry mirrors `token_risk` + `as_of`; untracked mints → `{mint, error: "not_tracked"}` |
 | `rest.token_candles(mint, tf, limit, from_, to)` | PRO+ | 1-minute-derived OHLCV candles by timeframe. PRO=OHLCV/30d, ULTRA=+net flow/full history |
