@@ -239,7 +239,7 @@ class ScoutLeaderboardInput(BaseModel):
 
 class MadeOnSolScoutLeaderboard(BaseTool):
     name: str = "madeonsol_scout_leaderboard"
-    description: str = "Scout leaderboard — top KOLs ranked by scout score and swarm attraction rate. ULTRA only."
+    description: str = "Scout leaderboard — top KOLs ranked by scout score and swarm attraction rate. PRO+."
     args_schema: type[BaseModel] = ScoutLeaderboardInput
 
     def _run(self, limit: int | None = None, scout_tier: str | None = None, sort: str | None = None) -> str:
@@ -419,8 +419,8 @@ class MadeOnSolTokenHolders(BaseTool):
     description: str = (
         "Live holder census + concentration for a token — who holds NOW (not who bought first). "
         "Read live from the ledger: every token account of the mint merged per owner, so "
-        "concentration.holder_count is EXACT (null only when the provider refuses the census for a "
-        "mega-cap — then a top-20 fallback with source.census_fallback_reason set; never estimated "
+        "concentration.holder_count is EXACT (null only when the census is not served: provider "
+        "refusal for a mega-cap, a timeout, or balances above the mint supply — then a top-20 fallback with source.census_fallback_reason set; never estimated "
         "from trades). Each disclosed owner is labelled from MadeOnSol data (deployer / kol / "
         "early_buyer / bundle / bot / dump_cluster; empty labels = unknown, not clean). Liquidity "
         "pools, bonding curves and burns are EXCLUDED from the circulating denominator and NAMED in "

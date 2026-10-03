@@ -230,7 +230,7 @@ class MadeOnSolClient:
         min_kols: int = 3,
         limit: int = 20,
         min_avg_winrate: float | None = None,
-        unique_strategies: int | None = None,
+        unique_strategies: bool | None = None,
         include_majors: bool | None = None,
         window_minutes: int | None = None,
         min_score: int | None = None,
@@ -244,7 +244,8 @@ class MadeOnSolClient:
             min_kols: Minimum KOLs in a cluster.
             limit: Max clusters to return.
             min_avg_winrate: PRO+ — require cluster avg winrate_7d >= N (0-100).
-            unique_strategies: PRO+ — require cluster to span >= N strategies.
+            unique_strategies: PRO+ — True = require the cluster's KOLs to span
+                distinct strategies (the route accepts true/false; a number is a 400).
             include_majors: v1.1 — include WIF/BONK/POPCAT etc. Default False.
             window_minutes: v1.1 — peak-density window size (1-60). Default 15.
             min_score: v1.1 — minimum composite coordination score (0-100).
@@ -257,7 +258,7 @@ class MadeOnSolClient:
         if min_avg_winrate is not None:
             params["min_avg_winrate"] = min_avg_winrate
         if unique_strategies is not None:
-            params["unique_strategies"] = unique_strategies
+            params["unique_strategies"] = "true" if unique_strategies else "false"
         if include_majors is not None:
             params["include_majors"] = "true" if include_majors else "false"
         if window_minutes is not None:
@@ -285,8 +286,9 @@ class MadeOnSolClient:
             period: One of 'today', '7d', '30d', '90d', '180d'. Trade history is
                 retained for 180 days; long windows fill up over time.
             limit: Max KOLs to return.
-            sort: PRO+ — 'pnl' (default), 'winrate', 'profit_factor', 'roi', or 'early_entry'.
-            strategy: PRO+ — filter by 'sniper', 'flipper', 'swinger', 'holder', 'mixed'.
+            sort: PRO+ — 'pnl' (default), 'winrate', 'volume', 'avg_roi',
+                'profit_factor', 'early_entry_pct' or 'consistency' (any other value is a 400).
+            strategy: PRO+ — filter by 'scalper', 'day_trader', 'swing_trader', 'hodler', 'mixed'.
             min_winrate: PRO+ — minimum winrate cutoff (0-100).
         """
         params: dict[str, Any] = {"period": period, "limit": limit}
@@ -359,7 +361,7 @@ class MadeOnSolClient:
         min_kols: int = 1,
         limit: int = 20,
         min_avg_winrate: float | None = None,
-        unique_strategies: int | None = None,
+        unique_strategies: bool | None = None,
     ) -> dict[str, Any]:
         """KOL momentum tokens — accelerating KOL buy interest.
 
@@ -368,13 +370,14 @@ class MadeOnSolClient:
             min_kols: Minimum distinct KOL buyers.
             limit: Max tokens to return.
             min_avg_winrate: PRO+ — require avg winrate_7d of buyers >= N (0-100).
-            unique_strategies: PRO+ — require >= N distinct strategies among buyers.
+            unique_strategies: PRO+ — True = require the buyers to span distinct
+                strategies (the route accepts true/false; a number is a 400).
         """
         params: dict[str, Any] = {"period": period, "min_kols": min_kols, "limit": limit}
         if min_avg_winrate is not None:
             params["min_avg_winrate"] = min_avg_winrate
         if unique_strategies is not None:
-            params["unique_strategies"] = unique_strategies
+            params["unique_strategies"] = "true" if unique_strategies else "false"
         return self._get_sync("/api/x402/kol/tokens/hot", params)
 
     def kol_trending_tokens(
@@ -1108,9 +1111,10 @@ class MadeOnSolREST:
         (rolling): the gap between them is the signal, not either alone.
 
         Args:
-            tier: Restrict to one grade (``elite``/``good``/``rising``/…).
-            sort: ``'bonding_rate'`` (default) | ``'recent'`` |
-                ``'total_bonded'`` | ``'last_deploy'``.
+            tier: Restrict to one grade (``elite``/``good``/``moderate``/``rising``/``cold``).
+            sort: ``'bonding_rate'`` (default) | ``'recent_bond_rate'`` |
+                ``'total_bonded'`` | ``'last_deploy_at'`` | ``'post_bond_survival_rate'``
+                (any other value is a 400).
             limit: Page size (1–100, default 20).
             offset: Page offset (default 0).
 
@@ -1587,8 +1591,9 @@ class MadeOnSolREST:
 
         * ``concentration.holder_count`` is EXACT (distinct non-zero owners
           minus the excluded pools / curves / burns) via the census. It is
-          ``None`` ONLY when the provider refuses the census for a mega-cap
-          (TRUMP/JUP/BONK class) — then ``source.method`` is
+          ``None`` ONLY when the census is not served (provider refusal for a
+          TRUMP/JUP/BONK-class mega-cap, a timeout, or balances adding up to
+          more than the mint supply) — then ``source.method`` is
           ``'getTokenLargestAccounts'``, ``source.census_fallback_reason`` is
           set and only the top-20 view is served. It is never estimated from
           trades.
@@ -1659,7 +1664,17 @@ class MadeOnSolREST:
         Amounts (``*_raw``) are base-unit digit STRINGS; ``amount`` /
         ``*_usd`` / ``*_pct_of_supply`` are ``None`` when decimals or price are
         unknown (see ``token.facts_resolved``). **LP locks are NOT included**
-        — this is token / vesting locks only. Keyed (``msk_``) API only, not on
+        — this is token / vesting locks only.
+
+        Provenance (2026-10-02): every row carries ``provider`` (``id``,
+        ``name``, ``identity`` = ``verified`` | ``compatible`` | ``unverified``,
+        ``compatible_with``, ``website_url``, ``lock_url`` — always ``None`` on
+        Solana, no per-lock URL format is proven), ``explorer``
+        (``lock_account_url``, ``creation_tx_url`` on Solana Explorer),
+        ``price_usd`` (the price behind every ``*_usd`` field),
+        ``seconds_until_end`` (0 once completed, ``None`` when perpetual or
+        cancelled / closed) and ``seconds_until_next_unlock``. Bonfida rows
+        add their tranche ``schedule``. Keyed (``msk_``) API only, not on
         the x402 rail; BASIC gets HTTP 403.
 
         Args:
@@ -2169,7 +2184,9 @@ class MadeOnSolREST:
         live read of the curve's VIRTUAL reserves. Concentrated pools
         (CLMM/Orca/DLMM), Meteora-DBC curves, and unclassified pools land in
         ``unsupported_pools`` with a ``reason`` rather than a wrong number.
-        When no pools are tracked: ``found=False`` with empty arrays.
+        ``found=False`` = no pool with sufficient authoritative data for depth:
+        tracked pools that lack it are listed in ``unsupported_pools`` with a
+        ``reason``; with no tracked pool at all both arrays are empty.
 
         Args:
             mint: Token mint address.
@@ -2771,7 +2788,7 @@ class MadeOnSolREST:
         sort: str | None = None,
     ) -> dict[str, Any]:
         """Scout leaderboard: top KOLs ranked by scout score and swarm attraction
-        rate. ULTRA only.
+        rate. PRO+ (was ULTRA until 2026-09-12).
 
         Args:
             limit: Max entries.
@@ -2791,7 +2808,7 @@ class MadeOnSolREST:
         since: str | None = None,
         min_score: int | None = None,
     ) -> dict[str, Any]:
-        """Coordination history: past coordination alert fires. ULTRA only.
+        """Coordination history: past coordination alert fires. PRO+ (was ULTRA until 2026-09-12).
 
         Args:
             limit: Max entries.
