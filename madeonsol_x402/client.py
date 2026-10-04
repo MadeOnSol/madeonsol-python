@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -412,24 +413,29 @@ class MadeOnSolClient:
     def kol_alerts_recent(
         self,
         *,
-        window: str = "15m",
+        window: str = "6h",
         types: list[str] | None = None,
+        limit: int = 30,
         min_severity: str | None = None,
-        limit: int = 50,
     ) -> dict[str, Any]:
         """Live KOL alert feed.
 
         Args:
-            window: '5m', '15m', '1h', '6h', or '24h'. Default '15m'.
+            window: '1h', '6h', or '24h'. Default '6h'.
             types: Subset of 'consensus_cluster', 'fresh_token_kol_buy', 'heating_up'.
-            min_severity: 'low', 'medium', or 'high'.
-            limit: Max alerts to return.
+            limit: Max alerts to return (1-100). Default 30.
+            min_severity: Deprecated in 1.39.0 and ignored. The endpoint has no
+                severity filter (it was never applied); it is no longer sent.
         """
+        if min_severity is not None:
+            warnings.warn(
+                "kol_alerts_recent(min_severity=...) is deprecated and ignored: the endpoint has no severity filter.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         params: dict[str, Any] = {"window": window, "limit": limit}
         if types:
             params["types"] = ",".join(types)
-        if min_severity:
-            params["min_severity"] = min_severity
         return self._get_sync("/api/x402/kol/alerts/recent", params)
 
     def wallet_stats(self, address: str) -> dict[str, Any]:
@@ -1364,7 +1370,15 @@ class MadeOnSolREST:
                 'moderate', 'rising', 'cold', or 'unranked'.
             sort: v1.18 — adds momentum sorts 'mc_change_5m_desc',
                 'mc_change_1h_desc', 'volume_1h_desc', 'trending'.
+            min_lp_burnt_pct: Deprecated in 1.39.0 and ignored. ``/tokens`` never
+                read it, so it never filtered anything; it is no longer sent.
         """
+        if min_lp_burnt_pct is not None:
+            warnings.warn(
+                "tokens_list(min_lp_burnt_pct=...) is deprecated and ignored: /tokens has no LP-burn filter.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         params: dict[str, Any] = {}
         for key, val in {
             "min_mc": min_mc,
@@ -1374,7 +1388,6 @@ class MadeOnSolREST:
             "primary_dex": primary_dex,
             "authority_revoked": authority_revoked,
             "exclude_token2022": exclude_token2022,
-            "min_lp_burnt_pct": min_lp_burnt_pct,
             "min_volume_1h_usd": min_volume_1h_usd,
             "max_mev_share_pct": max_mev_share_pct,
             "mc_change_1h_min_pct": mc_change_1h_min_pct,
