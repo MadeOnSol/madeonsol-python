@@ -22,11 +22,12 @@ if TYPE_CHECKING:
 BASE_URL = "https://madeonsol.com"
 
 # x402-prefixed paths this client calls that have NO keyless x402 route:
-# the server's x402 price catalog never listed them and production answers 404.
+# the server does not offer them for keyless purchase (unavailable or retired).
 # They work with an api_key (the prefix is rewritten to ``/api/v1/``); in x402
 # (private-key) mode the method raises before any request or payment.
 # ``{param}`` stands for one path segment.
 X402_UNAVAILABLE_PATHS: tuple[str, ...] = (
+    "/api/x402/sniper/recent",
     "/api/x402/kol/scouts/leaderboard",
     "/api/x402/kol/coordination/history",
     "/api/x402/tokens/{mint}/kol-consensus",
@@ -130,10 +131,11 @@ class MadeOnSolClient:
         template = x402_unavailable_path(path)
         if template:
             raise KeylessNotAvailableError(
-                f"{template} is not available via x402 (no keyless route; the server "
-                "answers 404). Use an API-key client instead: "
+                f"{template} is not available via x402 (unavailable or retired). "
+                "Use an API-key client instead: "
                 "MadeOnSolClient(api_key=os.environ['MADEONSOL_API_KEY']). "
-                "Free key at https://madeonsol.com/pricing"
+                + ("Sniper requires ULTRA/BUSINESS/ENTERPRISE. Plans: https://madeonsol.com/pricing"
+                   if template == "/api/x402/sniper/recent" else "Free key at https://madeonsol.com/pricing")
             )
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -786,14 +788,10 @@ class MadeOnSolClient:
         min_bond_rate: float | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """v1.22 — Deshred pre-confirm pump.fun deploy feed, now keyless
-        (elite/good scope). **x402: $0.01**.
+        """Early deploy observations; ULTRA/BUSINESS/ENTERPRISE API key required.
 
-        Each deploy carries ``footprint`` — the slot-window snipe rollup
-        (``buys``, ``buyers``, ``sol``, ``supply_pct``, ``sniper_wallet_buys``,
-        ``data_available``, ``as_of``) or ``None`` when not yet settled /
-        observable. Keyed callers: PRO sees elite/good, ULTRA all tiers +
-        watchlist — see :meth:`MadeOnSolREST.sniper_recent`.
+        Keyless mode raises KeylessNotAvailableError before any request/payment.
+        An observed instruction is not proof of execution; no guaranteed lead.
         """
         params: dict[str, Any] = {}
         if since is not None: params["since"] = since
@@ -812,7 +810,7 @@ class MadeOnSolClient:
         return self._get_sync(f"/api/x402/deployer-hunter/{wallet}/trajectory")
 
     def discovery(self) -> dict[str, Any]:
-        """Free — list all endpoints and prices (25 keyless x402 endpoints)."""
+        """Free — list the current keyless endpoints and prices."""
         resp = httpx.get(f"{self.base_url}/api/x402")
         resp.raise_for_status()
         return resp.json()
@@ -947,10 +945,7 @@ class MadeOnSolREST:
             body["event"] = event
         return self._request("POST", "/webhooks/test", body)
 
-    # ── Sniper: deshred pre-confirm pump.fun deploys (PRO + ULTRA) ──
-    # Reconstructed from shred-level ("deshred") data, deploys surface ~500ms
-    # before the chain confirms them. PRO sees elite/good deployers; ULTRA sees
-    # every tier and can keep a custom deployer watchlist.
+    # Sniper observations: ULTRA/BUSINESS/ENTERPRISE, execution initially unknown.
 
     def sniper_recent(
         self,
@@ -961,17 +956,11 @@ class MadeOnSolREST:
         limit: int | None = None,
         watchlist: bool | None = None,
     ) -> dict[str, Any]:
-        """Deshred deploy feed — pump.fun launches ~500ms before they confirm.
+        """Early deploy observations for ULTRA/BUSINESS/ENTERPRISE API keys.
 
-        PRO sees elite/good deployers; ULTRA sees all tiers. Pass watchlist=True
-        (ULTRA) to narrow to your custom deployer watchlist (any tier).
-
-        v1.22 — each deploy carries ``footprint``: the slot-window snipe
-        rollup (``buys``, ``buyers``, ``sol``, ``supply_pct``,
-        ``sniper_wallet_buys``, ``data_available``, ``as_of``; buys in slots
-        deploy-1..deploy+3), or ``None`` for deploys younger than the ~10-min
-        settle window or outside the trade-pipeline write-gate — absent, not
-        zero.
+        Use action identities and separate execution status. An observation is
+        not proof of execution. Unknown footprint/enrichment stays None.
+        Pass watchlist=True to narrow to your custom deployer watchlist.
         """
         params: dict[str, Any] = {}
         if since:
@@ -1372,6 +1361,13 @@ class MadeOnSolREST:
                 'mc_change_1h_desc', 'volume_1h_desc', 'trending'.
             min_lp_burnt_pct: Deprecated in 1.39.0 and ignored. ``/tokens`` never
                 read it, so it never filtered anything; it is no longer sent.
+
+        Each token also carries ``lp_secured_pct`` (burned + non-cancelable
+        LOCKED share of the LP, 0-100; ``None`` = unknown, never 0 for
+        unknown), ``lp_secured_basis`` (``'permanent'`` | ``'temporary'`` |
+        ``'mixed'`` | ``None``) and ``lp_locked_until`` (earliest end of a
+        counted temporary lock, ISO, or ``None``). ``lp_burnt_pct`` stays
+        burn-only.
         """
         if min_lp_burnt_pct is not None:
             warnings.warn(
@@ -2236,16 +2232,21 @@ class MadeOnSolREST:
     ) -> dict[str, Any]:
         """Create a copy-trade rule. Returns webhook_secret ONCE — store it.
 
-        Signals fire only for trades by wallets MadeOnSol tracks as KOLs (the
-        roster at ``GET /api/v1/kol/wallets``). Any valid Solana address is
-        accepted into a rule, but an untracked wallet never produces a signal.
-        On servers from 2026-09-25 on the response says which: the
-        subscription carries ``source_wallets_tracked`` /
-        ``source_wallets_untracked`` and ``warnings`` lists
+        Which source wallets fire depends on the server's engine, reported on
+        each rule as ``source_admission``: ``any_wallet`` (production since
+        2026-10-04) = any valid Solana wallet, KOL or not, no Wallet Tracker entry
+        or quota needed; ``kol_only`` (legacy) = only wallets MadeOnSol tracks
+        as KOLs (``GET /api/v1/kol/wallets``), other wallets are accepted but
+        never produce a signal, and ``warnings`` lists
         ``untracked_source_wallets`` (or ``source_wallet_tracking_unavailable``).
+        ``operational_state`` says whether the rule can fire right now
+        (``eligible``, or under ``any_wallet`` ``monitoring_pending`` /
+        ``monitoring_unavailable`` (see ``monitoring_reasons``) /
+        ``source_capacity_unavailable``). ``source_wallets_tracked`` /
+        ``source_wallets_untracked`` are deprecated (enrichment only) but kept.
 
         Args:
-            source_wallets: Tracked KOL wallets to follow. The per-rule limit is
+            source_wallets: Wallets to follow. The per-rule limit is
                 set by your tier and enforced by the server: PRO 5, ULTRA 50,
                 BUSINESS 250 (Enterprise follows Business).
             sizing_amount: SOL when sizing_mode is 'fixed'; otherwise a
@@ -2294,7 +2295,8 @@ class MadeOnSolREST:
         subscription also carries ``source_wallets_tracked`` /
         ``source_wallets_untracked``, and ``warnings`` (codes
         ``untracked_source_wallets`` / ``source_wallet_tracking_unavailable``)
-        appears when a wallet can never fire. When this PATCH sets a
+        appears when a wallet can never fire (legacy ``kol_only`` engine only;
+        see ``source_admission`` / ``operational_state``). When this PATCH sets a
         ``webhook_url`` on a rule that had no signing secret yet, the response
         also carries ``webhook_secret`` (shown ONCE — store it) and ``note``.
         """
@@ -2851,3 +2853,4 @@ class MadeOnSolREST:
             mint: Token mint address.
         """
         return self._request("GET", f"/tokens/{mint}/peak-history")
+
