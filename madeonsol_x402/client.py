@@ -1503,20 +1503,32 @@ class MadeOnSolREST:
 
     # ── Token Quality ──
 
-    def token_cap_table(self, mint: str) -> dict[str, Any]:
+    def token_cap_table(self, mint: str, *, limit: int | None = None, verify_current_balances: bool | None = None,
+                        include_scout_scores: bool | None = None) -> dict[str, Any]:
         """First non-deployer early buyers for a token, enriched with PnL/KOL/bot flags.
 
         BASIC: 403. PRO: top 10, truncated wallets. ULTRA: top 20, full wallets.
+        ``verify_current_balances=True`` (ULTRA+) reads every early buyer's
+        current balance of the mint (all or HTTP 503); ``still_holding`` stays
+        the swap-ledger reading, ``holding_status`` is the balance.
+        ``include_scout_scores=True`` adds each KOL buyer's scout score as of
+        its own first buy (no hindsight).
         """
-        return self._request("GET", f"/tokens/{mint}/cap-table")
+        params: dict[str, Any] = {}
+        if limit is not None: params["limit"] = limit
+        if verify_current_balances: params["verify_current_balances"] = "true"
+        if include_scout_scores: params["include_scout_scores"] = "true"
+        return self._request("GET", f"/tokens/{mint}/cap-table", params=params or None)
 
-    def token_buyer_quality(self, mint: str) -> dict[str, Any]:
+    def token_buyer_quality(self, mint: str, *, include_balances: bool | None = None) -> dict[str, Any]:
         """0–100 buyer-quality score for a token's first-buyer cohort.
 
         BASIC: score + signal only. PRO/ULTRA: full breakdown.
-        Cached for 5 minutes per mint.
+        Cached for 5 minutes per mint. ``include_balances=True`` (PRO+) adds
+        ``dump_cluster_held_now``: what the dump-cluster early buyers hold now.
         """
-        return self._request("GET", f"/tokens/{mint}/buyer-quality")
+        params = {"include_balances": "true"} if include_balances else None
+        return self._request("GET", f"/tokens/{mint}/buyer-quality", params=params)
 
     def token_risk(self, mint: str) -> dict[str, Any]:
         """Transparent 0–100 token risk score (higher = riskier): risk evidence for your own policy, not a verdict.
@@ -1548,7 +1560,31 @@ class MadeOnSolREST:
         """
         return self._request("GET", f"/tokens/{mint}/risk")
 
-    def token_bundle(self, mint: str) -> dict[str, Any]:
+    def token_bundle_share(self, mint: str, *, window: str = "24h", min_wallets: int | None = None) -> dict[str, Any]:
+        """ONE figure: share of supply held now by all bundle wallets (launch
+        bundle ∪ every cluster in the window, each wallet once, from chain
+        balances). Cached 30 s per token (PRO+).
+
+        Route: ``GET /api/v1/tokens/{mint}/bundle-share``.
+        """
+        params: dict[str, Any] = {"window": window}
+        if min_wallets is not None: params["min_wallets"] = min_wallets
+        return self._request("GET", f"/tokens/{mint}/bundle-share", params=params)
+
+    def token_bundle_clusters(self, mint: str, *, window: str = "24h", min_wallets: int | None = None,
+                              limit: int | None = None, include_balances: bool | None = None) -> dict[str, Any]:
+        """Every coordinated buy cluster on a token in a window, the launch
+        bundle AND clusters that enter later (PRO+).
+
+        Route: ``GET /api/v1/tokens/{mint}/bundles``.
+        """
+        params: dict[str, Any] = {"window": window}
+        if min_wallets is not None: params["min_wallets"] = min_wallets
+        if limit is not None: params["limit"] = limit
+        if include_balances: params["include_balances"] = "true"
+        return self._request("GET", f"/tokens/{mint}/bundles", params=params)
+
+    def token_bundle(self, mint: str, *, include_balances: bool | None = None) -> dict[str, Any]:
         """Bundle-cohort holdings — how much of a token's supply the launch
         bundle still holds.
 
@@ -1568,8 +1604,11 @@ class MadeOnSolREST:
 
         Args:
             mint: Token mint address.
+            include_balances: PRO+. Add ``held_now``, the cohort's CURRENT
+                balances (totals only when every wallet was read).
         """
-        return self._request("GET", f"/tokens/{mint}/bundle")
+        params = {"include_balances": "true"} if include_balances else None
+        return self._request("GET", f"/tokens/{mint}/bundle", params=params)
 
     def token_pools(self, mint: str) -> dict[str, Any]:
         """Per-venue liquidity map — every DEX pool a token trades in, live vs
@@ -2844,6 +2883,27 @@ class MadeOnSolREST:
             mint: Token mint address.
         """
         return self._request("GET", f"/tokens/{mint}/kol-consensus")
+
+    def kol_token_trades(
+        self,
+        mint: str,
+        *,
+        limit: int | None = None,
+        action: str | None = None,
+        kol: str | None = None,
+        since: str | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Every stored KOL trade on one token, newest first (keyset paged).
+
+        Pass ``next_cursor`` from the previous page as ``cursor``. BASIC gets
+        the 5-minute delayed tape and at most 20 rows. Trades below the KOL
+        persistence floor (0.05 SOL / $3.50 stable leg) are not stored.
+
+        Route: ``GET /api/v1/kol/tokens/{mint}/trades``.
+        """
+        params = {k: v for k, v in {"limit": limit, "action": action, "kol": kol, "since": since, "cursor": cursor}.items() if v is not None}
+        return self._request("GET", f"/kol/tokens/{mint}/trades", params=params or None)
 
     def peak_history(self, mint: str) -> dict[str, Any]:
         """Peak MC history: ATH, decline from peak, MC at bond and at

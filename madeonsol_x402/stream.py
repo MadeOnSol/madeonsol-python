@@ -48,6 +48,7 @@ CHANNELS = (
     "token:candles",           # PRO+, mint-scoped: REQUIRES filters["mints"] (own cap 25/100/250); filters["updates"] = True adds the open minute
     "token:risk",              # PRO+, mint-scoped: REQUIRES filters["mints"]; risk-INPUT changes + a risk:inputs snapshot
     "wallet:scores",           # PRO+, wallet-scoped: REQUIRES filters["wallets"]; deployer tier + KOL score-state changes
+    "token:bundles",           # PRO+, broadcast: every NEW coordinated buy cluster (optional mints, min_wallets, min_new_wallets, phases, atomic_only)
 )
 
 # Event names delivered on those channels.
@@ -84,6 +85,8 @@ EVENT_NAMES = (
     "risk:inputs",             # on token:risk — snapshot frame (snapshot=True), current stored inputs per mint
     "deployer:tier_changed",   # on wallet:scores
     "kol:score_state_changed",  # on wallet:scores
+    "token:bundle_cluster",    # on token:bundles — one new coordinated buy cluster
+    "token:bundle_exit",       # on token:bundles — that cluster sold 25/50/90/100 % of its cluster buy
 )
 
 # ── Lock lifecycle payloads (token:locks, opt-in filters["lifecycle"] = True) ──
@@ -369,6 +372,9 @@ def _valid_cursor(c: Any) -> Optional[Dict[str, Any]]:
 # Fallback classification for servers that send no ``retryable`` flag: reasons
 # asking again can never fill. The server's own transient list is
 # backpressure | closed | source_busy | source_error | late_ingest_possible | row_cap.
+# Snapshot-then-update channels: a resume re-sends their state, so their
+# "state_stream" gap is never a history gap.
+STATE_STREAM_CHANNELS = frozenset({"token:prices", "rhc:token_prices"})
 PERMANENT_GAPS = frozenset({"not_reconstructable", "state_stream", "window_exceeded",
                             "ring_truncated", "instance_changed"})
 # The server's transient list - a channel with one of these is worth asking again.
@@ -1046,8 +1052,10 @@ class MadeOnSolStream:
             chs = end.get("channels")
             if isinstance(chs, dict):
                 for ch, raw in chs.items():
-                    if ch == "token:prices":
-                        continue  # a state stream: the server re-sends a snapshot, never a log
+                    # Price channels are state streams: the server re-sends a snapshot, never a
+                    # log. Named subscriptions key them "<sub_id>/<channel>", so strip the prefix.
+                    if ch.rsplit("/", 1)[-1] in STATE_STREAM_CHANNELS:
+                        continue
                     info = raw if isinstance(raw, dict) else {}
                     gap = info.get("gap")
                     late = info.get("late_ingest_possible") is True
