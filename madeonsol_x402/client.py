@@ -1560,6 +1560,17 @@ class MadeOnSolREST:
         """
         return self._request("GET", f"/tokens/{mint}/risk")
 
+    def token_insider_flow(self, mint: str) -> dict[str, Any]:
+        """Insider sell pressure: net SOL selling by the creator, early buyers,
+        bundle wallets and KOLs over the last 5 and 15 minutes, against the
+        window's buy volume and the token's liquidity (PRO+). A trade whose SOL
+        value is not proven is counted in ``unpriced_trades`` and makes the
+        dependent nets and ratios null with a reason, never 0.
+
+        Route: ``GET /api/v1/tokens/{mint}/insider-flow``.
+        """
+        return self._request("GET", f"/tokens/{mint}/insider-flow")
+
     def token_bundle_share(self, mint: str, *, window: str = "24h", min_wallets: int | None = None) -> dict[str, Any]:
         """ONE figure: share of supply held now by all bundle wallets (launch
         bundle ∪ every cluster in the window, each wallet once, from chain
@@ -2165,7 +2176,9 @@ class MadeOnSolREST:
         PRO+.
 
         Each trade: ``tx_signature``, ``wallet_address``, ``action``
-        (``'buy'`` | ``'sell'``), ``sol_amount``, ``token_amount``,
+        (``'buy'`` | ``'sell'``), ``sol_amount`` (``float | None``: ``None`` = the SOL
+        consideration is unproven, ``event.price_status`` ``'quote_unpriced'`` or
+        ``'proceeds_unattributed'``; ``0`` = a measured zero), ``token_amount``,
         ``price_sol`` (``float | None``), ``price_usd`` (``float | None``),
         ``market_price_sol`` (``float | None``), ``market_price_usd``
         (``float | None``), ``early_buyer_rank`` (``int | None``), ``slot`` (``int | None``),
@@ -2373,6 +2386,47 @@ class MadeOnSolREST:
         if max_mc_usd is not None:
             params["max_mc_usd"] = max_mc_usd
         return self._request("GET", "/copytrade/signals", params=params)
+
+    def signal_inbox(
+        self,
+        *,
+        products: list[str] | None = None,
+        cursor: str | None = None,
+        since: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Signal inbox: your coordination / copy-trade (Solana + RHC) signals in
+        one order, including the ones fired while you were offline.
+
+        Fetching does not acknowledge; call ``signal_inbox_ack`` with the
+        ``next_cursor`` you processed. Dedupe on ``delivery_id`` (the same key as
+        the WS frame's and the webhook's ``delivery_id``). A cursor is bound to
+        the product set it was issued for. The server answers 503
+        ``feature_disabled`` until the inbox is released.
+
+        Args:
+            products: any of coordination, copytrade, rhc_coordination,
+                rhc_copytrade (default all four).
+            cursor: ``next_cursor`` of a previous page, or ``"acked"``.
+            since: ISO 8601 start without a cursor (default: 7 days ago).
+            limit: 1-500. Default 100.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if products:
+            params["products"] = ",".join(products)
+        if cursor:
+            params["cursor"] = cursor
+        if since:
+            params["since"] = since
+        return self._request("GET", "/signals/inbox", params=params)
+
+    def signal_inbox_ack(self, cursor: str, *, products: list[str] | None = None) -> dict[str, Any]:
+        """Mark the inbox read up to and including ``cursor``, in that cursor's
+        product set. Monotonic (an older position changes nothing), never deletes."""
+        body: dict[str, Any] = {"cursor": cursor}
+        if products:
+            body["products"] = products
+        return self._request("POST", "/signals/inbox/ack", body)
 
     # ── Coordination Alerts (PRO/ULTRA) ──
 
@@ -2735,6 +2789,10 @@ class MadeOnSolREST:
         """Cursor-paginated raw trades for any wallet (default last 90 days).
         Cursor is stable across DESC pagination — pass `next_cursor` from the
         previous response to fetch older trades. PRO+.
+
+        ``sol_amount`` is ``float | None``: ``None`` = the SOL consideration is
+        unproven (``event.price_status`` ``'quote_unpriced'`` or
+        ``'proceeds_unattributed'``); ``0`` = a measured zero.
 
         Args:
             address: Base58 wallet address.
