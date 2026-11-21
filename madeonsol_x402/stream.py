@@ -49,6 +49,8 @@ CHANNELS = (
     "token:risk",              # PRO+, mint-scoped: REQUIRES filters["mints"]; risk-INPUT changes + a risk:inputs snapshot
     "wallet:scores",           # PRO+, wallet-scoped: REQUIRES filters["wallets"]; deployer tier + KOL score-state changes
     "token:bundles",           # PRO+, broadcast: every NEW coordinated buy cluster (optional mints, min_wallets, min_new_wallets, phases, atomic_only)
+    "token:trades",            # PRO+, mint-scoped: REQUIRES filters["mints"] (cap 25/100/250); committed trades, each the exact REST /tokens/{mint}/trades row
+    "token:holders_top",       # PRO+, mint-scoped: REQUIRES filters["mints"] (cap 25/100/250); holder index top holders (PRO 10 / ULTRA 50 / BUSINESS 100)
 )
 
 # Event names delivered on those channels.
@@ -87,6 +89,8 @@ EVENT_NAMES = (
     "kol:score_state_changed",  # on wallet:scores
     "token:bundle_cluster",    # on token:bundles — one new coordinated buy cluster
     "token:bundle_exit",       # on token:bundles — that cluster sold 25/50/90/100 % of its cluster buy
+    "token:trade",             # on token:trades — one committed trade, data = {mint, ...the REST row}
+    "token:holders_top",       # on token:holders_top — data.type snapshot | update | heartbeat | resync_required
 )
 
 # ── Lock lifecycle payloads (token:locks, opt-in filters["lifecycle"] = True) ──
@@ -338,6 +342,15 @@ _SUB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 def _sub_id_of(msg: Dict[str, Any]) -> str:
     v = msg.get("sub_id")
     return v if isinstance(v, str) and v else DEFAULT_SUB_ID
+
+
+def _trade_mint_suffix(msg: Dict[str, Any]) -> str:
+    """NUL + mint for a token:trade frame (part of the dedupe key), else ""."""
+    if msg.get("event") != "token:trade":
+        return ""
+    d = msg.get("data")
+    m = (d.get("mint") or d.get("token_mint")) if isinstance(d, dict) else None
+    return f"\x00{m}" if isinstance(m, str) and m else ""
 
 
 class StreamConnectionLimitError(RuntimeError):
@@ -1404,8 +1417,11 @@ class MadeOnSolStream:
         fid = str(raw_id) if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool) else None
         if fid is not None and self.dedupe_size > 0:
             # Dedupe is per (sub_id, channel, id): the same event delivered under
-            # two named subscriptions is two legitimate deliveries.
-            key = f"{_sub_id_of(msg)}\x00{msg.get('channel')}\x00{fid}"
+            # two named subscriptions is two legitimate deliveries. token:trade
+            # frames add the mint: both legs of a token-for-token swap share one
+            # event_id, and a server older than the 2026-11-21 id change sends
+            # that bare event_id as the frame id.
+            key = f"{_sub_id_of(msg)}\x00{msg.get('channel')}\x00{fid}{_trade_mint_suffix(msg)}"
             if key in self._seen:
                 self._seen.move_to_end(key)
                 if in_replay and self._recovery is not None:

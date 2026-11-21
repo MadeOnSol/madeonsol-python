@@ -771,6 +771,14 @@ class MadeOnSolClient:
         if min_bought_sol is not None: params["min_bought_sol"] = min_bought_sol
         return self._get_sync(f"/api/x402/tokens/{mint}/top-traders", params or None)
 
+    def token_holders(self, mint: str, *, source: str = "index") -> dict[str, Any]:
+        """Read current holders with the requested index or census source."""
+        return self._get_sync(f"/api/x402/tokens/{mint}/holders", {"source": source})
+
+    def token_bundle_share(self, mint: str, *, window: str = "24h", min_wallets: int = 3) -> dict[str, Any]:
+        """Read current bundle holdings and their evidence coverage."""
+        return self._get_sync(f"/api/x402/tokens/{mint}/bundle-share", {"window": window, "min_wallets": min_wallets})
+
     def token_cap_table(self, mint: str) -> dict[str, Any]:
         """v1.22 — Early-buyer cap table (first non-deployer buyers with PnL,
         exit status, bundle/KOL/alpha flags), now keyless. **x402: $0.02**.
