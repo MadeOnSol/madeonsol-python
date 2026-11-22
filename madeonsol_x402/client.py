@@ -187,6 +187,13 @@ class MadeOnSolClient:
     ) -> dict[str, Any]:
         """Real-time KOL trade feed from 1,000+ wallets.
 
+        Servers from 2026-11-22 add ``data_contract`` (version ``sol-kol-feed.v1``):
+        ``source_as_of`` is when the page read kol_trades, ``coverage.newest_trade_at``
+        the newest row, ``coverage.delayed_cutoff`` the free-tier cutoff (None =
+        real-time) and ``ingest_watermark`` kol-tracker's ``solana:kol_trades``
+        checkpoint (None with status ``unmeasured`` when unreadable). ``stream``
+        carries ``channel``, ``url``, ``token_endpoint``, ``subscribe`` and ``note``.
+
         Args:
             limit: Max trades to return.
             before: Cursor — ISO 8601 timestamp; returns trades strictly older
@@ -500,7 +507,8 @@ class MadeOnSolClient:
         (that trade's executed price, ``sol_amount / token_amount``) and
         ``market_price_sol``/``market_price_usd`` (the canonical pool price near
         its slot) — this route previously returned amounts and no price at all.
-        Same definitions as :meth:`token_trades`.
+        Same definitions as :meth:`token_trades`, including ``market_price_observed_at``,
+        ``market_price_source`` and ``market_price_semantics``.
 
         Args:
             address: Base58 wallet address.
@@ -664,10 +672,31 @@ class MadeOnSolClient:
     def token(self, mint: str) -> dict[str, Any]:
         """Live token snapshot — price, market cap, FDV, liquidity, and DEX metadata.
 
-        Returns ``{ "token": {...} }`` with ``price_usd``/``price_sol``,
-        ``market_cap``, ``fdv_usd``, ``liquidity_usd``, ``liquidity_to_mc_ratio``,
-        ``primary_dex``, ``is_token_2022``, ``transfer_fee_bps``, and a
-        ``top_buyers`` array of ``{name, sol_amount}``.
+        Servers from 2026-11-22 add a top-level ``data_contract`` (``sol-token.v1``,
+        the same block as the keyed ``GET /api/v1/token/{mint}``; on this x402 path
+        since the 2026-11-22 server release): ``source_as_of`` equals
+        ``token.price_observed_at`` (None with evidence ``unknown`` when no
+        observation time is recorded); a stale price keeps its real time and
+        ``evidence.price`` is then ``inferred``, never ``verified``.
+
+        Returns ``{ "token": {...}, "as_of": ..., "data_contract": {...} }`` with
+        ``price_usd``/``price_sol``, ``market_cap``, ``fdv_usd``,
+        ``liquidity_usd``, ``liquidity_to_mc_ratio``, ``primary_dex``,
+        ``is_token_2022``, ``transfer_fee_bps``, ``kol_activity`` (its
+        ``top_buyers`` rows are ``{name, sol_amount}``) and ``project``:
+
+        - ``project.sources``: per-field provenance keyed by field name (only
+          fields with a value), each ``{source, path, observed_at}``; ``source``
+          is the metadata document URL or ``"dexscreener"``, ``observed_at`` may
+          be None for a DexScreener field.
+        - ``project.website_check``: ``{status, source?, token?, observed_at?}``
+          with ``status`` one of ``not_checked`` / ``found`` /
+          ``not_found_on_checked_page`` (one page only, not proof of absence) /
+          ``unreachable``.
+        - ``project.metadata`` / ``project.onchain_metadata``: publisher documents
+          kept verbatim (deployer-controlled, no fixed schema) or None;
+          ``metadata_truncated`` is True when the document exceeded 32 KiB.
+        - ``project.additional_documents``: list of ``{source, metadata, truncated}``.
 
         Args:
             mint: Token mint address.
@@ -772,7 +801,15 @@ class MadeOnSolClient:
         return self._get_sync(f"/api/x402/tokens/{mint}/top-traders", params or None)
 
     def token_holders(self, mint: str, *, source: str = "index") -> dict[str, Any]:
-        """Read current holders with the requested index or census source."""
+        """Read current holders with the requested index or census source.
+
+        Same body as the keyed ``GET /api/v1/tokens/{mint}/holders``: ``mint``,
+        ``slot``, ``as_of``, ``age_seconds``, ``holders``, ``count``,
+        ``disclosed``, ``excluded``, ``concentration``, ``deployer``, ``source``,
+        ``index`` (index source only) and ``data_contract`` (``sol-holders.v1``).
+        ``upgrade_hint`` (``{feature, tier, note, checkout}``) is present only
+        when ranked owners were withheld by the disclosure cap.
+        """
         return self._get_sync(f"/api/x402/tokens/{mint}/holders", {"source": source})
 
     def token_bundle_share(self, mint: str, *, window: str = "24h", min_wallets: int = 3) -> dict[str, Any]:
@@ -1131,6 +1168,12 @@ class MadeOnSolREST:
 
     def deployer_profile(self, wallet: str) -> dict[str, Any]:
         """One deployer's profile — tier, bond rates, totals, runner rate.
+
+        Servers from 2026-11-22 add ``data_contract`` (``sol-deployer.v1``):
+        ``source_as_of`` is ``deployers.updated_at`` (when the stats row was last
+        written; None with evidence ``unknown`` for a wallet that is not a
+        deployer). ``funding_features`` carries 14 flat fields (None = not observed
+        or not entitled, never 0).
 
         An untracked wallet returns HTTP 200 with ``is_deployer`` False and
         ``deployer`` None, not a 404; the counters (``total_tokens_deployed``,
@@ -2110,6 +2153,10 @@ class MadeOnSolREST:
         """Bulk token snapshot for up to 50 mints, cheaper than N sequential
         :meth:`token` calls (all tiers).
 
+        Servers from 2026-11-22 add ``data_contract`` (``sol-token.v1``) inside each
+        entry of ``tokens``, with that token's own ``price_observed_at`` as
+        ``source_as_of``.
+
         Returns the same per-mint shape as :meth:`token` (MC, holders,
         velocity, MEV-share, history age) for every mint, batched into one
         request. ULTRA callers additionally get wallet addresses inside each
@@ -2207,6 +2254,18 @@ class MadeOnSolREST:
         basis, fills and PnL; the second for a per-token price series independent
         of trade size and direction. (Before 2026-08-16 ``price_sol`` carried the
         canonical value and disagreed with the row's own amounts by a 7.9% median.)
+
+        ``market_price_*`` is the LAST MEASURED market price, stored with the trade.
+        ``market_price_observed_at`` (``str | None``, ISO 8601; present once the server
+        enables it) is when the tracker measured it, ``None`` = not recorded for this row
+        (the price is still served). ``market_price_observed_at_status`` is ``'observed'``
+        (time present), ``'not_recorded'`` (market price served, no observation time
+        stored, e.g. older rows) or ``'not_applicable'`` (no market price served);
+        ``market_price_source`` is ``'mc_tracker'`` when that time is set,
+        else ``None``. ``market_price_semantics`` is ``'last_measured_market_price'`` on a
+        ``quote_unpriced`` row that serves a market price without an observation time:
+        not the price at the moment of the trade (its execution price is ``None``; a
+        wallet fee is never served as a price), else ``None``.
 
         Args:
             mint: Token mint address.
